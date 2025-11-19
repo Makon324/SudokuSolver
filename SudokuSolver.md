@@ -40,3 +40,7 @@ Funkcja hosta `solve_multiple_sudoku` orkiestruje to:
 - Pętla po poziomach: Uruchamia kernel znajdowania, zbiera rozwiązane/nieważne plansze, następnie uruchamia kernel generowania, aby wyprodukować następną partię.
 - Śledzi aktywne plansze za pomocą `out_inserted`, realokując w razie potrzeby, aby obsłużyć wzrost wykładniczy (choć MRV pomaga to ograniczyć).
 
+## Odzyskiwanie Rozwiązanych Plansz
+Po zakończeniu przetwarzania (gdy `kernel find_next_cell_kernel` oznaczy planszę jako rozwiązaną poprzez ustawienie współrzędnych (200, 200)), pełna plansza Sudoku nie jest przechowywana explicite w formie macierzy 9x9, lecz w kompaktowej reprezentacji bitowej. Aby odzyskać czytelną planszę, należy zrekonstruować ją na podstawie historii wstawionych liczb (historii: `next_cells_x`, `next_cells_y` oraz `out_inserted`).
+
+
