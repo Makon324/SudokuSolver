@@ -60,26 +60,33 @@ public:
         unsigned char index = 3 * 9 * 9 + 9 * x + y;
         unsigned char array_index = index / 32;
         unsigned char bit_index = index % 32;
-        repr[array_index] |= (1ULL << bit_index);
+        repr[array_index] |= (1U << bit_index);
     }
+};
+
+struct SudokuBoards {
+    int ids[];
+
+    uint32_t repr[11][];
 };
 
 
 int MAX_LEVELS = 81;
 
 // Kernel 1: Find Next Cell (MRV), track solved and invalid boards (solved x, y = 200; invalid x, y = 255)
-__global__ void find_next_cell_kernel(SudokuBoard* boards, uint8_t* next_cells_x, uint8_t* next_cells_y) {
+__global__ void find_next_cell_kernel(SudokuBoards* boards, uint8_t* next_cells_x, uint8_t* next_cells_y) {
 
 }
 
 // Kernel 2: Generate Children
-__global__ void generate_children_kernel(SudokuBoard* in_boards, uint8_t* next_cells_x, uint8_t* next_cells_y, SudokuBoard* out_boards) {
+__global__ void generate_children_kernel(SudokuBoards* in_boards, uint8_t* next_cells_x, uint8_t* next_cells_y, SudokuBoards* out_boards, uint8_t* out_inserted) {
 
 }
 
 // Main function
 void solve_multiple_sudoku(const std::vector<SudokuBoard>& inputs) {
 	// Allocate device memory
+    // keep track of out_inserted
 
     for (int level = 0; level < MAX_LEVELS; level++) {
         
