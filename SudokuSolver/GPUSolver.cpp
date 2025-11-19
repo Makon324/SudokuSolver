@@ -74,7 +74,7 @@ struct SudokuBoards {
 int MAX_LEVELS = 81;
 
 // Kernel 1: Find Next Cell (MRV), track solved and invalid boards (solved x, y = 200; invalid x, y = 255)
-__global__ void find_next_cell_kernel(SudokuBoards* boards, uint8_t* next_cells_x, uint8_t* next_cells_y) {
+__global__ void find_next_cell_kernel(SudokuBoards* boards, uint8_t* next_cells_x, uint8_t* next_cells_y, uint8_t* count_possibilities) {
 
 }
 
@@ -85,14 +85,14 @@ __global__ void generate_children_kernel(SudokuBoards* in_boards, uint8_t* next_
 
 // Main function
 void solve_multiple_sudoku(const std::vector<SudokuBoard>& inputs) {
-	// Allocate device memory
+	// Preallocate device memory
     // keep track of out_inserted
 
     for (int level = 0; level < MAX_LEVELS; level++) {
         
 		// launch find_next_cell_kernel
 
-        // allocate memory, output finished bords
+        // sort boards based on count_possibilities, output finished bords
 
 		// launch generate_children_kernel
         
