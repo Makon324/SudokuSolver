@@ -4,7 +4,7 @@ Ten dokument opisuje podejście do rozwiązywania wielu łamigłówek Sudoku ró
 
 ## Reprezentacja Planszy
 
-Każda plansza Sudoku jest reprezentowana kompaktowo za pomocą tablicy masek bitowych składającej się z 11 elementów `uint32_t`, co daje łącznie 352 bity (potrzebne tylko 4*9*9 = 324). Ta struktura dzieli się na cztery logiczne sekcje, każda o 81 bitach (9x9), aby śledzić ograniczenia i stan:
+Każda plansza Sudoku jest reprezentowana kompaktowo za pomocą tablicy masek bitowych składającej się z 11 elementów `uint32_t`, co daje łącznie 352 bity (potrzebne tylko 4 * 9 * 9 = 324). Ta struktura dzieli się na cztery logiczne sekcje, każda o 81 bitach (9x9), aby śledzić ograniczenia i stan:
 
 - **Wiersze (bity 0–80)**: Dla każdego wiersza (0–8), 9 bitów wskazuje, które liczby (1–9) są użyte.
 - **Kolumny (bity 81–161)**: Podobnie, dla każdej kolumny, bity śledzą zajęte liczby.
