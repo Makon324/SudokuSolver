@@ -4,158 +4,165 @@
 #include <vector>
 #include <stack>
 
-class board
+class SudokuBoard
 {
-    uint64_t repr[6] = {};
+    int id;
 
-    void set_index(unsigned char index) {
-        unsigned char array_index = index / 64;
-        unsigned char bit_index = index % 64;
-        repr[array_index] |= (1ULL << bit_index);
+    uint32_t repr[11] = {}; // 4*9*9 = 324 bits -> 11 uint32_t (352 bits)
+
+    inline void set_index(uint16_t index) {
+		uint8_t array_index = index >> 5;  // index / 32
+		uint8_t bit_index = index & 31;  // index % 32
+        repr[array_index] |= (1U << bit_index);
     }
 
-    void unset_index(unsigned char index) {
-        unsigned char array_index = index / 64;
-        unsigned char bit_index = index % 64;
-        repr[array_index] &= ~(1ULL << bit_index);
+    inline void unset_index(uint16_t index) {
+        uint8_t array_index = index >> 5;  // index / 32
+		uint8_t bit_index = index & 31;  // index % 32
+        repr[array_index] &= ~(1U << bit_index);
     }
 
-    bool get_index(unsigned char index) {
-        unsigned char array_index = index / 64;
-        unsigned char bit_index = index % 64;
+    inline bool get_index(uint16_t index) {
+        uint8_t array_index = index >> 5;  // index / 32
+		uint8_t bit_index = index & 31;  // index % 32
         return ((repr[array_index] & (1ULL << bit_index)) > 0);
+    }
+
+    inline void set_set(uint16_t index) {
+        uint8_t array_index = index >> 5;  // index / 32
+        uint8_t bit_index = index & 31;  // index % 32
+        repr[array_index] |= (1U << bit_index);
+    }
+
+    inline void unset_set(uint16_t index) {
+        uint8_t array_index = index >> 5;  // index / 32
+        uint8_t bit_index = index & 31;  // index % 32
+        repr[array_index] &= ~(1U << bit_index);
 	}
+
+    static const uint8_t row_id[81];
+    static const uint8_t col_id[81];
+    static const uint8_t box_id[81];
 
 public:
-    void set(unsigned char x, unsigned char y, unsigned char number) {
-		set_index(9*x + number);
-        set_index(9*9 + 9*y + number);
-        set_index(2*9*9 + 9*((x/3) + 3*(y/3)) + number);
+    void set(uint8_t pos, uint8_t number) {
+        set_index(9 * row_id[pos] + number);
+        set_index(81 + 9 * col_id[pos] + number);
+        set_index(162 + 9 * box_id[pos] + number);
+		set_set(243 + pos);
     }
 
-    void unset(unsigned char x, unsigned char y, unsigned char number) {
-        unset_index(9 * x + number);
-        unset_index(9 * 9 + 9 * y + number);
-        unset_index(2 * 9 * 9 + 9 * ((x / 3) + 3 * (y / 3)) + number);
+    bool is_set(uint16_t index) {
+        uint8_t array_index = index >> 5;  // index / 32
+        uint8_t bit_index = index & 31;  // index % 32
+        return repr[array_index] & (1U << bit_index);
     }
 
-    bool is_blocked(unsigned char x, unsigned char y, unsigned char number) {
-        return get_index(9*x + number) ||
-               get_index(9*9 + 9*y + number) ||
-               get_index(2*9*9 + 9*((x/3) + 3*(y/3)) + number);
-	}
+    void unset(uint8_t pos, uint8_t number) {
+        unset_index(9 * row_id[pos] + number);
+        unset_index(81 + 9 * col_id[pos] + number);
+        unset_index(162 + 9 * box_id[pos] + number);
+		unset_set(243 + pos);
+    }
 
-    bool is_preset(unsigned char x, unsigned char y) {
-        unsigned char index = 3*9*9 + 9 * x + y;
-        unsigned char array_index = index / 64;
-        unsigned char bit_index = index % 64;
-		return repr[array_index] & (1ULL << bit_index);
-	}
-
-    void set_preset(unsigned char x, unsigned char y) {
-        unsigned char index = 3 * 9 * 9 + 9 * x + y;
-        unsigned char array_index = index / 64;
-        unsigned char bit_index = index % 64;
-        repr[array_index] |= (1ULL << bit_index);
+    bool is_blocked(uint8_t pos, uint8_t number) {
+        return get_index(9 * row_id[pos] + number) ||
+            get_index(81 + 9 * col_id[pos] + number) ||
+            get_index(162 + 9 * box_id[pos] + number);
+            // is_set() called before
     }
 };
 
-board read_board_from_file(const std::string& filename) {
-    board b;
-    std::ifstream in(filename);
-    if (!in) {
-        std::cerr << "Failed to open file: " << filename << std::endl;
-        return b;  // Return empty board on failure
-    }
+const uint8_t SudokuBoard::row_id[81] = {
+    0, 0, 0, 0, 0, 0, 0, 0, 0,
+    1, 1, 1, 1, 1, 1, 1, 1, 1,
+    2, 2, 2, 2, 2, 2, 2, 2, 2,
+    3, 3, 3, 3, 3, 3, 3, 3, 3,
+    4, 4, 4, 4, 4, 4, 4, 4, 4,
+    5, 5, 5, 5, 5, 5, 5, 5, 5,
+    6, 6, 6, 6, 6, 6, 6, 6, 6,
+    7, 7, 7, 7, 7, 7, 7, 7, 7,
+    8, 8, 8, 8, 8, 8, 8, 8, 8
+};
 
-    for (unsigned char x = 0; x < 9; x++) {  // x = row
-        std::string line;
-        if (!std::getline(in, line)) {
-            std::cerr << "Incomplete file content." << std::endl;
-            return b;
-        }
-        if (line.length() < 9) {
-            std::cerr << "Line too short in file." << std::endl;
+const uint8_t SudokuBoard::col_id[81] = {
+    0, 1, 2, 3, 4, 5, 6, 7, 8,
+    0, 1, 2, 3, 4, 5, 6, 7, 8,
+    0, 1, 2, 3, 4, 5, 6, 7, 8,
+    0, 1, 2, 3, 4, 5, 6, 7, 8,
+    0, 1, 2, 3, 4, 5, 6, 7, 8,
+    0, 1, 2, 3, 4, 5, 6, 7, 8,
+    0, 1, 2, 3, 4, 5, 6, 7, 8,
+    0, 1, 2, 3, 4, 5, 6, 7, 8,
+    0, 1, 2, 3, 4, 5, 6, 7, 8
+};
+
+const uint8_t SudokuBoard::box_id[81] = {
+    0, 0, 0, 3, 3, 3, 6, 6, 6,
+    0, 0, 0, 3, 3, 3, 6, 6, 6,
+    0, 0, 0, 3, 3, 3, 6, 6, 6,
+    1, 1, 1, 4, 4, 4, 7, 7, 7,
+    1, 1, 1, 4, 4, 4, 7, 7, 7,
+    1, 1, 1, 4, 4, 4, 7, 7, 7,
+    2, 2, 2, 5, 5, 5, 8, 8, 8,
+    2, 2, 2, 5, 5, 5, 8, 8, 8,
+    2, 2, 2, 5, 5, 5, 8, 8, 8
+};
+
+uint8_t find_next_pos(SudokuBoard &board){
+    int current_best = 10;
+	uint8_t best_pos;
+    bool is_solved = true;
+    for (uint8_t i = 0; i < 81; i++) {
+        if (!board.is_set(i)) {
+			is_solved = false;
+			int num_possible = 0;
+            for (uint8_t num = 0; num < 9; num++) {
+                if (!board.is_blocked(i, num)) {
+					num_possible++;
+                }
+			}
+            if (num_possible < current_best) {
+                current_best = num_possible;
+                best_pos = i;
+			}
+		}  
+    }
+    if (is_solved) {
+        return 200;
+	}
+	return current_best != 10 ? best_pos : 255;
+}
+
+void generate_boards(std::vector<SudokuBoard>& boards) {
+    std::vector<SudokuBoard> new_boards;
+    for (auto &board : boards) {
+        uint8_t pos = find_next_pos(board);
+        if (pos == 255) {
+			// impossible
             continue;
         }
-        for (unsigned char y = 0; y < 9; y++) {  // y = column
-            char c = line[y];
-            if (c >= '1' && c <= '9') {
-                unsigned char num = c - '1';  // Convert '1'-'9' to 0-8
-                if (!b.is_blocked(x, y, num)) {
-                    b.set(x, y, num);
-                    b.set_preset(x, y);
-                }
-                else {
-                    std::cerr << "Invalid preset at (" << (int)x << ", " << (int)y << "): conflicts with existing constraints." << std::endl;
-                }
-            }
-            // Ignore '0', '.', or other characters as empty cells
+        if (pos == 200) {
+            // solved
+            new_boards.push_back(board);
+            continue;
         }
-    }
-    return b;
-}
-
-bool solve(board& b, unsigned char start_x, unsigned char start_y) {
-    std::vector<std::pair<unsigned char, unsigned char>> empties;
-    bool started = false;
-    for (unsigned char yy = 0; yy < 9; yy++) {
-        for (unsigned char xx = 0; xx < 9; xx++) {
-            if (!started) {
-                if (yy > start_y || (yy == start_y && xx >= start_x)) {
-                    started = true;
-                }
-                else {
-                    continue;
-                }
-            }
-            if (!b.is_preset(xx, yy)) {
-                empties.push_back({ xx, yy });
+        for (uint8_t num = 0; num < 9; num++) {
+            if (!board.is_blocked(pos, num)) {
+                SudokuBoard new_board = board;
+                new_board.set(pos, num);
+                new_boards.push_back(new_board);
             }
         }
-    }
-    if (empties.empty()) {
-        return true;
-    }
-    std::stack<unsigned char> choice_stack;
-    int ptr = 0;
-    while (true) {
-        auto [x, y] = empties[ptr];
-        unsigned char start_k;
-        bool is_new = (ptr == static_cast<int>(choice_stack.size()));
-        if (is_new) {
-            start_k = 0;
-        }
-        else {
-            unsigned char prev_k = choice_stack.top();
-            choice_stack.pop();
-            b.unset(x, y, prev_k);
-            start_k = prev_k + 1;
-        }
-        bool found = false;
-        for (unsigned char k = start_k; k < 9; k++) {
-            if (!b.is_blocked(x, y, k)) {
-                b.set(x, y, k);
-                choice_stack.push(k);
-                found = true;
-                ptr++;
-                if (ptr == static_cast<int>(empties.size())) {
-                    return true;
-                }
-                break;
-            }
-        }
-        if (!found) {
-            ptr--;
-            if (ptr < 0) {
-                return false;
-            }
-        }
-    }
+	}
+	new_boards.shrink_to_fit();
+	new_boards.swap(boards);
 }
 
 
-int main(int argc, ch)
+
+
+int main(int argc, char* argv[])
 {
 
 
