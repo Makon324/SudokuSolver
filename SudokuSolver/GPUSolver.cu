@@ -4,7 +4,7 @@
 #include <vector>
 #include <stack>
 
-
+/*
 
 class SudokuBoard
 {
@@ -65,7 +65,7 @@ public:
 };
 
 
-int MAX_LEVELS = 81;
+const int MAX_LEVELS = 81;
 /*
 // Kernel 1: Find Next Cell (MRV), track solved and invalid boards (solved x, y = 200; invalid x, y = 255)
 __global__ void find_next_cell_kernel(SudokuBoard* boards, uint8_t* next_cells_x, uint8_t* next_cells_y) {
