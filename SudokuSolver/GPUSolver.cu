@@ -98,7 +98,7 @@ public:
     __device__ __host__ void set(uint32_t board_idx, uint8_t pos, uint8_t number) {
         set_index(board_idx, 9 * (pos / 9) + number);
         set_index(board_idx, 81 + 9 * (pos % 9) + number);
-        set_index(board_idx, 162 + 9 * (((pos % 9) / 3) * 3 + (pos / 27)) + number);
+        set_index(board_idx, 162 + 9 * ((pos / 27) * 3 + ((pos % 9) / 3)) + number);
         set_number_at_pos(board_idx, pos, number + 1);
     }
     __device__ __host__ bool is_set(uint32_t board_idx, uint8_t pos) {
@@ -109,13 +109,13 @@ public:
     __device__ __host__ void unset(uint32_t board_idx, uint8_t pos, uint8_t number) {
         unset_index(board_idx, 9 * (pos / 9) + number);
         unset_index(board_idx, 81 + 9 * (pos % 9) + number);
-        unset_index(board_idx, 162 + 9 * (((pos % 9) / 3) * 3 + (pos / 27)) + number);
+        unset_index(board_idx, 162 + 9 * ((pos / 27) * 3 + ((pos % 9) / 3)) + number);
         unset_number_at_pos(board_idx, pos);
     }
     __device__ __host__ bool is_blocked(uint32_t board_idx, uint8_t pos, uint8_t number) {
         return get_index(board_idx, 9 * (pos / 9) + number) ||
             get_index(board_idx, 81 + 9 * (pos % 9) + number) ||
-            get_index(board_idx, 162 + 9 * (((pos % 9) / 3) * 3 + (pos / 27)) + number);
+            get_index(board_idx, 162 + 9 * ((pos / 27) * 3 + ((pos % 9) / 3)) + number);
     }
     __device__ __host__ uint8_t get_number_at_pos(uint32_t board_idx, uint8_t pos) {
         uint8_t repr_idx = 17 - (pos >> 3);
