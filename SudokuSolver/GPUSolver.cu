@@ -53,11 +53,16 @@ public:
             exit(1);
         }
         cudaMemset(repr, 0, bytes);
-        // Prefetch to device 0 (assuming single GPU)
-        err = cudaMemPrefetchAsync(repr, bytes, 0, nullptr);
-        if (err != cudaSuccess) {
-            fprintf(stderr, "Warning: cudaMemPrefetchAsync to GPU failed: %s (continuing)\n", cudaGetErrorString(err));
-        }
+        // Check if device supports concurrent managed access before prefetch
+        int concurrentMA = 0;
+        cudaGetDeviceAttribute(&concurrentMA, cudaDevAttrConcurrentManagedAccess, 0);
+        if (concurrentMA) {
+            // Prefetch to device 0 (assuming single GPU)
+            err = cudaMemPrefetchAsync(repr, bytes, 0, nullptr);
+            if (err != cudaSuccess) {
+                fprintf(stderr, "Warning: cudaMemPrefetchAsync to GPU failed: %s (continuing)\n", cudaGetErrorString(err));
+            }
+        } // else skip prefetch, as not supported on this device
         // Hint: CPU will only read at the end
         err = cudaMemAdvise(repr, bytes, cudaMemAdviseSetReadMostly, cudaCpuDeviceId);
         if (err != cudaSuccess) {
