@@ -55,7 +55,7 @@ public:
         cudaMemset(repr, 0, bytes);
         // Check if device supports concurrent managed access before prefetch
         int concurrentMA = 0;
-        cudaGetDeviceAttribute(&concurrentMA, cudaDevAttrConcurrentManagedAccess, 0);
+        cudaDeviceGetAttribute(&concurrentMA, cudaDevAttrConcurrentManagedAccess, 0);
         if (concurrentMA) {
             // Prefetch to device 0 (assuming single GPU)
             err = cudaMemPrefetchAsync(repr, bytes, 0, nullptr);
