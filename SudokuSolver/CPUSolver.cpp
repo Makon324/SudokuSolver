@@ -7,6 +7,8 @@
 #include <tuple>
 #include <stack>
 
+
+
 class SudokuBoard
 {
 	uint32_t repr[18]{}; // 3*9*9 = 243 bits + 81 * 4 = 324 bits = 567 bits < 576 bits = 18 * 32 bits
@@ -31,13 +33,13 @@ class SudokuBoard
 
     inline void set_number_at_pos(uint8_t pos, uint8_t number) {
 		uint8_t array_index = 17 - (pos >> 3);  // end - (pos / 8)
-        uint8_t bit_index = 31 - ((pos & 7) << 2);  // 31 - (pos % 8) * 4
+        uint8_t bit_index = 28 - ((pos & 7) << 2);  // 28 - (pos % 8) * 4
 		repr[array_index] |= (number << bit_index);
     }
 
     inline void unset_number_at_pos(uint8_t pos) {
         uint8_t array_index = 17 - (pos >> 3);  // end - (pos / 8)
-        uint8_t bit_index = 31 - ((pos & 7) << 2);  // 31 - (pos % 8) * 4
+        uint8_t bit_index = 28 - ((pos & 7) << 2);  // 28 - (pos % 8) * 4
 		repr[array_index] &= (-1U ^ (15 << bit_index));
     }
 
@@ -57,7 +59,7 @@ public:
 
     bool is_set(uint8_t pos) {
         uint8_t array_index = 17 - (pos >> 3);  // end - (pos / 8)
-        uint8_t bit_index = 31 - ((pos & 7) << 2);  // 31 - (pos % 8) * 4
+        uint8_t bit_index = 28 - ((pos & 7) << 2);  // 28 - (pos % 8) * 4
         return (repr[array_index] & (15 << bit_index)) > 0;
     }
 
@@ -77,7 +79,7 @@ public:
 
     uint8_t get_number_at_pos(uint8_t pos) {
         uint8_t array_index = 17 - (pos >> 3);  // end - (pos / 8)
-        uint8_t bit_index = 31 - ((pos & 7) << 2);  // 31 - (pos % 8) * 4
+        uint8_t bit_index = 28 - ((pos & 7) << 2);  // 28 - (pos % 8) * 4
         return (repr[array_index] >> bit_index) & 15;
 	}
 };
@@ -118,6 +120,8 @@ const uint8_t SudokuBoard::box_id[81] = {
     2, 2, 2, 5, 5, 5, 8, 8, 8
 };
 
+const int MAX_LEVELS = 81;
+
 uint8_t find_next_pos(SudokuBoard &board){
     int current_best = 10;
 	uint8_t best_pos;
@@ -143,8 +147,9 @@ uint8_t find_next_pos(SudokuBoard &board){
 	return current_best != 10 ? best_pos : 255;
 }
 
-void generate_boards(std::vector<SudokuBoard>& boards, std::vector<bool>& is_solved) {
+void generate_boardsCPU(std::vector<SudokuBoard>& boards, int input_size) {
     std::vector<SudokuBoard> new_boards;
+    std::vector<bool> is_solved(input_size, false);
     for (auto &board : boards) {
         if (is_solved[board.id]) {
             // already solved
@@ -173,7 +178,31 @@ void generate_boards(std::vector<SudokuBoard>& boards, std::vector<bool>& is_sol
 	new_boards.swap(boards);
 }
 
-std::vector<SudokuBoard> read_boards(const std::string& filename) {
+std::vector<std::array<uint8_t, 81>> SolveSudokusCPU(std::vector<SudokuBoard>& boards) {
+	int input_size = boards.size();
+    for (int level = 0; level < MAX_LEVELS; level++) {
+		generate_boardsCPU(boards, input_size);
+    }
+
+	// Retrieve solutions
+    std::vector<std::array<uint8_t, 81>> solutions(input_size);
+	std::vector<bool> solution_found(input_size, false);
+    for (auto &board : boards) {
+		std::array<uint8_t, 81> solution{};
+        if (solution_found[board.id]) {
+            continue;
+        }
+        for (uint8_t pos = 0; pos < 81; pos++) {
+			solution[pos] = board.get_number_at_pos(pos);
+        }
+		solutions[board.id] = solution;
+        solution_found[board.id] = true;
+    }
+
+	return solutions;
+}
+
+std::vector<SudokuBoard> read_boardsCPU(const std::string& filename, const int count) {
     std::vector<SudokuBoard> boards;
     std::ifstream file(filename);
     if (!file.is_open()) {
@@ -181,8 +210,8 @@ std::vector<SudokuBoard> read_boards(const std::string& filename) {
         return boards;
     }
     std::string line;
-	int id = 0;
-    while (std::getline(file, line)) {
+    int id = 0;
+    while (std::getline(file, line) && id < count) {
         if (line.length() != 81) {
             continue; // Skip invalid lines
         }
@@ -205,7 +234,7 @@ std::vector<SudokuBoard> read_boards(const std::string& filename) {
             }
         }
         if (valid) {
-			board.id = id++;
+            board.id = id++;
             boards.push_back(board);
         }
     }
@@ -213,56 +242,45 @@ std::vector<SudokuBoard> read_boards(const std::string& filename) {
     return boards;
 }
 
-const int MAX_LEVELS = 81;
-
-std::vector<std::array<uint8_t, 81>> SolveSudokus(std::vector<SudokuBoard>& boards) {
-	int input_size = boards.size();
-	std::vector<bool> is_solved(input_size, false);
-    for (int level = 0; level < MAX_LEVELS; level++) {
-		generate_boards(boards, is_solved);
+void write_solutionsCPU(const std::string& filename, const std::vector<std::array<uint8_t, 81>>& solutions) {
+    std::ofstream file(filename);
+    if (!file.is_open()) {
+        std::cerr << "Failed to open output file: " << filename << std::endl;
+        return;
     }
-	is_solved.clear();
-
-	// Retrieve solutions
-    std::vector<std::array<uint8_t, 81>> solutions(input_size);
-	std::vector<bool> solution_found(input_size, false);
-    for (auto &board : boards) {
-		std::array<uint8_t, 81> solution{};
-        if (solution_found[board.id]) {
+    for (const auto& solution : solutions) {
+        bool is_valid_solution = true;
+        for (uint8_t pos = 0; pos < 81; ++pos) {
+            uint8_t num = solution[pos];
+            if (num == 0) {
+                is_valid_solution = false;
+                break;
+            }
+        }
+        if (!is_valid_solution) {
+            // Skip or handle unsolvable puzzles, e.g., write a placeholder
+            file << "No solution" << std::endl;
             continue;
         }
-        for (uint8_t pos = 0; pos < 81; pos++) {
-			solution[pos] = board.get_number_at_pos(pos);
+        for (uint8_t pos = 0; pos < 81; ++pos) {
+            uint8_t num = solution[pos];
+            file << static_cast<char>('0' + num);
         }
-		solutions[board.id] = solution;
-        solution_found[board.id] = true;
+        file << std::endl;
     }
-
-	return solutions;
+    file.close();
 }
 
-
-
-
-int main(int argc, char* argv[])
-{
-    if (argc != 2) {
-        std::cerr << "Usage: " << argv[0] << " <input_file>" << std::endl;
-        return 1;
-    }
-    std::string filename = argv[1];
-    std::vector<SudokuBoard> boards = read_boards(filename);
+void solveCPU(const std::string& input_file, const std::string& output_file, int count) {
+    std::vector<SudokuBoard> boards = read_boardsCPU(input_file, count);
     if (boards.empty()) {
-        return 0;
+        return;
     }
-    std::vector<std::array<uint8_t, 81>> solutions = SolveSudokus(boards);
-    for (const auto& solution : solutions) {
-        for (uint8_t pos = 0; pos < 81; pos++) {
-            std::cout << static_cast<char>('0' + solution[pos]);
-        }
-        std::cout << std::endl;
-    }
-    return 0;
+    std::vector<std::array<uint8_t, 81>> solutions = SolveSudokusCPU(boards);
+    write_solutionsCPU(output_file, solutions);
 }
+
+
+
 
 

@@ -12,11 +12,18 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="CPUSolver.cpp" />
-    <ClCompile Include="GPUSolver.cu" />
+    <CudaCompile Include="GPUSolver.cu">
+      <FileType>Document</FileType>
+    </CudaCompile>
+    <ClCompile Include="main.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="main.h" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{960AE0C4-EDF1-D438-5C46-BB9495DF89E8}</ProjectGuid>
     <RootNamespace>SudokuSolver</RootNamespace>
+    <CudaToolkitCustomDir>$(CUDA_PATH_V12_8)</CudaToolkitCustomDir>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
