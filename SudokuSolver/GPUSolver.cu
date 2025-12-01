@@ -239,6 +239,9 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards& inputs)
         find_next_cell_kernel << <blocks, threads >> > (current, next_pos, num_children_out);
         cudaDeviceSynchronize();
 
+        cudaMemPrefetchAsync(num_children_out, num_boards * sizeof(uint32_t), cudaCpuDeviceId);
+        cudaDeviceSynchronize();
+
         uint32_t new_num = 0;
         for (uint32_t i = 0; i < num_boards; ++i) {
             new_num += num_children_out[i];
@@ -273,6 +276,9 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards& inputs)
 
     // Prefetch final data to host removed for compatibility
 
+    cudaDeviceSynchronize();
+
+    cudaMemPrefetchAsync(current.repr, 19ULL * current.get_num_boards() * sizeof(uint32_t), cudaCpuDeviceId);
     cudaDeviceSynchronize();
 
     std::vector<std::array<uint8_t, 81>> solutions(original_num);
