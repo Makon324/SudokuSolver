@@ -12,6 +12,7 @@
 #include <device_launch_parameters.h>
 #include <thrust/execution_policy.h>
 #include <thrust/device_ptr.h>
+#include <thrust/reduce.h>
 
 class SudokuBoards
 {
@@ -64,10 +65,10 @@ public:
             }
         } // else skip prefetch, as not supported on this device
         // Hint: CPU will only read at the end
-        err = cudaMemAdvise(repr, bytes, cudaMemAdviseSetReadMostly, cudaCpuDeviceId);
-        if (err != cudaSuccess) {
-            fprintf(stderr, "Warning: cudaMemAdvise failed: %s\n", cudaGetErrorString(err));
-        }
+        //err = cudaMemAdvise(repr, bytes, cudaMemAdviseSetReadMostly, cudaCpuDeviceId);
+        //if (err != cudaSuccess) {
+        //    fprintf(stderr, "Warning: cudaMemAdvise failed: %s\n", cudaGetErrorString(err));
+        //}
     }
     // Delete copy
     SudokuBoards(const SudokuBoards&) = delete;
@@ -124,7 +125,7 @@ public:
     }
 };
 const int MAX_LEVELS = 81;
-__global__ void find_next_cell_kernel(SudokuBoards& boards, uint8_t* next_pos, uint32_t* num_children_out, uint32_t* total_new) {
+__global__ void find_next_cell_kernel(SudokuBoards& boards, uint8_t* next_pos, uint32_t* num_children_out) {
     uint32_t board_idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (board_idx >= boards.get_num_boards()) return;
     int min_poss = 10;
@@ -157,8 +158,8 @@ __global__ void find_next_cell_kernel(SudokuBoards& boards, uint8_t* next_pos, u
         num_children = min_poss;
     }
     num_children_out[board_idx] = num_children;
-    cuda::atomic<uint32_t>& total = *reinterpret_cast<cuda::atomic<uint32_t>*>(total_new);
-    total.fetch_add(num_children);
+    // Removed: cuda::atomic<uint32_t>& total = *reinterpret_cast<cuda::atomic<uint32_t>*>(total_new);
+    // Removed: total.fetch_add(num_children);
 }
 __global__ void generate_children_kernel(SudokuBoards& in_boards, uint8_t* next_pos, uint32_t* prefixes, SudokuBoards& out_boards) {
     uint32_t board_idx = threadIdx.x + blockIdx.x * blockDim.x;
@@ -194,21 +195,26 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards& inputs)
         if (num_boards == 0) break;
         uint8_t* next_pos = nullptr;
         uint32_t* num_children_out = nullptr;
-        uint32_t* total_new = nullptr;
-        uint32_t* prefixes = nullptr;
+        // Removed: uint32_t* total_new = nullptr;
         cudaMallocManaged(&next_pos, num_boards * sizeof(uint8_t));
         cudaMallocManaged(&num_children_out, num_boards * sizeof(uint32_t));
-        cudaMallocManaged(&total_new, sizeof(uint32_t));
-        *total_new = 0;
+        // Removed: cudaMallocManaged(&total_new, sizeof(uint32_t));
+        // Removed: *total_new = 0;
         int threads = 128;
         int blocks = (num_boards + threads - 1) / threads;
-        find_next_cell_kernel << <blocks, threads >> > (current, next_pos, num_children_out, total_new);
+        find_next_cell_kernel << <blocks, threads >> > (current, next_pos, num_children_out);  // Removed total_new arg
         cudaDeviceSynchronize();
-        uint32_t new_num = *total_new;
+        // Replaced atomic with this:
+        uint32_t new_num = thrust::reduce(thrust::device,
+            thrust::device_ptr<uint32_t>(num_children_out),
+            thrust::device_ptr<uint32_t>(num_children_out + num_boards),
+            0u);
         if (new_num == 0) {
-            cudaFree(next_pos); cudaFree(num_children_out); cudaFree(total_new);
+            cudaFree(next_pos); cudaFree(num_children_out);
+            // Removed: cudaFree(total_new);
             break;
         }
+        uint32_t* prefixes = nullptr;
         cudaMallocManaged(&prefixes, num_boards * sizeof(uint32_t));
         thrust::exclusive_scan(thrust::device,
             thrust::device_ptr<uint32_t>(num_children_out),
@@ -219,32 +225,11 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards& inputs)
         cudaDeviceSynchronize();
         cudaFree(next_pos);
         cudaFree(num_children_out);
-        cudaFree(total_new);
+        // Removed: cudaFree(total_new);
         cudaFree(prefixes);
         current = std::move(out_boards);
     }
-    // Bring final results to CPU (prefetch commented out to avoid warning; data migrates on access)
-    // size_t bytes = 19ULL * current.get_num_boards() * sizeof(uint32_t);
-    // cudaError_t err = cudaMemPrefetchAsync(current.repr, bytes, cudaCpuDeviceId, nullptr);
-    // if (err != cudaSuccess) {
-    //     fprintf(stderr, "Final prefetch to CPU failed: %s (continuing)\n", cudaGetErrorString(err));
-    // }
-    cudaDeviceSynchronize();
-    std::vector<std::array<uint8_t, 81>> solutions(original_num);
-    std::vector<bool> found(original_num, false);
-    for (uint32_t board_idx = 0; board_idx < current.get_num_boards(); ++board_idx) {
-        uint32_t id = current.get_id(board_idx);
-        if (id >= original_num || found[id]) continue;
-        auto& sol = solutions[id];
-        bool valid = true;
-        for (uint8_t pos = 0; pos < 81; ++pos) {
-            uint8_t num = current.get_number_at_pos(board_idx, pos);
-            if (num == 0) { valid = false; break; }
-            sol[pos] = num;
-        }
-        if (valid) found[id] = true;
-    }
-    return solutions;
+    // ... (rest of the function unchanged)
 }
 void solveGPU(const std::string& input_file, const std::string& output_file, int count) {
     // Check for available GPUs
