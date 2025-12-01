@@ -4,119 +4,176 @@
 #include <string>
 #include <array>
 #include <vector>
+#include <tuple>
+#include <stack>
+
 #include <cuda.h>
 #include <cuda_runtime.h>
+#include <cuda/atomic>
 #include <device_launch_parameters.h>
+
+#include <thrust/execution_policy.h>
+#include <thrust/device_ptr.h>
+
+
 
 class SudokuBoards
 {
     uint32_t num_boards;
+
     __device__ __host__ inline void set_index(uint32_t board_idx, uint16_t index) {
-        uint8_t repr_idx = index >> 5;
-        uint8_t bit_index = index & 31;
+        uint8_t repr_idx = index >> 5; // index / 32
+        uint8_t bit_index = index & 31; // index % 32
         repr[repr_idx * num_boards + board_idx] |= (1U << bit_index);
     }
+
     __device__ __host__ inline void unset_index(uint32_t board_idx, uint16_t index) {
-        uint8_t repr_idx = index >> 5;
-        uint8_t bit_index = index & 31;
+        uint8_t repr_idx = index >> 5; // index / 32
+        uint8_t bit_index = index & 31; // index % 32
         repr[repr_idx * num_boards + board_idx] &= ~(1U << bit_index);
     }
+
     __device__ __host__ inline bool get_index(uint32_t board_idx, uint16_t index) {
-        uint8_t repr_idx = index >> 5;
-        uint8_t bit_index = index & 31;
+        uint8_t repr_idx = index >> 5; // index / 32
+        uint8_t bit_index = index & 31; // index % 32
         return ((repr[repr_idx * num_boards + board_idx] & (1U << bit_index)) > 0);
     }
+
     __device__ __host__ inline void set_number_at_pos(uint32_t board_idx, uint8_t pos, uint8_t number) {
-        uint8_t repr_idx = 17 - (pos >> 3);
-        uint8_t bit_index = 28 - ((pos & 7) << 2);
+        uint8_t repr_idx = 17 - (pos >> 3); // end - (pos / 8)
+        uint8_t bit_index = 28 - ((pos & 7) << 2); // 28 - (pos % 8) * 4
         repr[repr_idx * num_boards + board_idx] |= (number << bit_index);
     }
+
     __device__ __host__ inline void unset_number_at_pos(uint32_t board_idx, uint8_t pos) {
-        uint8_t repr_idx = 17 - (pos >> 3);
-        uint8_t bit_index = 28 - ((pos & 7) << 2);
+        uint8_t repr_idx = 17 - (pos >> 3); // end - (pos / 8)
+        uint8_t bit_index = 28 - ((pos & 7) << 2); // 28 - (pos % 8) * 4
         repr[repr_idx * num_boards + board_idx] &= (-1U ^ (15 << bit_index));
     }
+
 public:
-    uint32_t* repr;
+    uint32_t* repr; // Flat SoA layout: repr[field * num_boards + board_idx] for 18 data fields + 1 id field
+
     __device__ __host__ uint32_t get_num_boards() const { return num_boards; }
+
     // Constructor: allocate unified memory
-    SudokuBoards(uint32_t n) : num_boards(n) {
+    SudokuBoards::SudokuBoards(uint32_t n) : num_boards(n) {
         size_t bytes = 19ULL * n * sizeof(uint32_t);
+
         cudaError_t err = cudaMallocManaged(&repr, bytes);
         if (err != cudaSuccess) {
             fprintf(stderr, "cudaMallocManaged failed: %s\n", cudaGetErrorString(err));
             exit(1);
         }
+
         cudaMemset(repr, 0, bytes);
-        // Prefetch handled outside
+
+        // Define locations (modern API requires cudaMemLocation struct)
+        cudaMemLocation gpu_loc = { cudaMemLocationTypeDevice, 0 };  // GPU device 0
+        cudaMemLocation cpu_loc = { cudaMemLocationTypeHost, 0 };    // Host (CPU); id is ignored for Host type
+
+        // Best practice: everything lives on GPU
+        err = cudaMemPrefetchAsync(repr, bytes, gpu_loc, 0, nullptr);  // Prefetch to GPU 0; flags=0, default stream
+        if (err != cudaSuccess) {
+            fprintf(stderr, "cudaMemPrefetchAsync failed: %s\n", cudaGetErrorString(err));
+            exit(1);
+        }
+
+        // Optional: hint that CPU will only read results at the very end (read-mostly for host access)
+        err = cudaMemAdvise(repr, bytes, cudaMemAdviseSetReadMostly, cpu_loc);
+        if (err != cudaSuccess) {
+            fprintf(stderr, "cudaMemAdvise failed: %s\n", cudaGetErrorString(err));
+            exit(1);
+        }
     }
-    // Delete copy
+
+    // Delete copy constructor and assignment (managed memory doesn't like shallow copies)
     SudokuBoards(const SudokuBoards&) = delete;
     SudokuBoards& operator=(const SudokuBoards&) = delete;
-    // Move semantics
+
+    // Allow move semantics if needed (optional)
     SudokuBoards(SudokuBoards&& other) noexcept : num_boards(other.num_boards), repr(other.repr) {
         other.repr = nullptr;
         other.num_boards = 0;
     }
+
     SudokuBoards& operator=(SudokuBoards&& other) noexcept {
         if (this != &other) {
-            if (repr) cudaFree(repr);
+            if (repr != nullptr) {
+                cudaFree(repr);
+            }
             num_boards = other.num_boards;
             repr = other.repr;
-            other.repr = nullptr;
             other.num_boards = 0;
+            other.repr = nullptr;
         }
         return *this;
     }
+
     ~SudokuBoards() {
         if (repr != nullptr) {
             cudaFree(repr);
         }
     }
+
     __device__ __host__ uint32_t get_id(uint32_t board_idx) const {
         return repr[18 * num_boards + board_idx];
     }
+
     __device__ __host__ void set(uint32_t board_idx, uint8_t pos, uint8_t number) {
         set_index(board_idx, 9 * (pos / 9) + number);
         set_index(board_idx, 81 + 9 * (pos % 9) + number);
-        set_index(board_idx, 162 + 9 * ((pos / 27) * 3 + ((pos % 9) / 3)) + number);
+        set_index(board_idx, 162 + 9 * (((pos % 9) / 3) * 3 + (pos / 27)) + number);
         set_number_at_pos(board_idx, pos, number + 1);
     }
+
     __device__ __host__ bool is_set(uint32_t board_idx, uint8_t pos) {
-        uint8_t repr_idx = 17 - (pos >> 3);
-        uint8_t bit_index = 28 - ((pos & 7) << 2);
+        uint8_t repr_idx = 17 - (pos >> 3); // end - (pos / 8)
+        uint8_t bit_index = 28 - ((pos & 7) << 2); // 28 - (pos % 8) * 4
         return (repr[repr_idx * num_boards + board_idx] & (15 << bit_index)) > 0;
     }
+
     __device__ __host__ void unset(uint32_t board_idx, uint8_t pos, uint8_t number) {
         unset_index(board_idx, 9 * (pos / 9) + number);
         unset_index(board_idx, 81 + 9 * (pos % 9) + number);
-        unset_index(board_idx, 162 + 9 * ((pos / 27) * 3 + ((pos % 9) / 3)) + number);
+        unset_index(board_idx, 162 + 9 * (((pos % 9) / 3) * 3 + (pos / 27)) + number);
         unset_number_at_pos(board_idx, pos);
     }
+
     __device__ __host__ bool is_blocked(uint32_t board_idx, uint8_t pos, uint8_t number) {
         return get_index(board_idx, 9 * (pos / 9) + number) ||
             get_index(board_idx, 81 + 9 * (pos % 9) + number) ||
-            get_index(board_idx, 162 + 9 * ((pos / 27) * 3 + ((pos % 9) / 3)) + number);
+            get_index(board_idx, 162 + 9 * (((pos % 9) / 3) * 3 + (pos / 27)) + number);
+        // is_set() called before
     }
+
     __device__ __host__ uint8_t get_number_at_pos(uint32_t board_idx, uint8_t pos) {
-        uint8_t repr_idx = 17 - (pos >> 3);
-        uint8_t bit_index = 28 - ((pos & 7) << 2);
+        uint8_t repr_idx = 17 - (pos >> 3); // end - (pos / 8)
+        uint8_t bit_index = 28 - ((pos & 7) << 2); // 28 - (pos % 8) * 4
         return (repr[repr_idx * num_boards + board_idx] >> bit_index) & 15;
     }
 };
+
+
 const int MAX_LEVELS = 81;
-__global__ void find_next_cell_kernel(SudokuBoards& boards, uint8_t* next_pos, uint32_t* num_children_out) {
+
+// Kernel 1: Find Next Cell (MRV), return next_pos and number of boards to be generated
+__global__ void find_next_cell_kernel(SudokuBoards& boards, uint8_t* next_pos, uint32_t* num_children_out, uint32_t* total_new) {
     uint32_t board_idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (board_idx >= boards.get_num_boards()) return;
+
     int min_poss = 10;
     uint8_t best_pos = 0;
     bool is_solved = true;
+
     for (uint8_t pos = 0; pos < 81; ++pos) {
         if (!boards.is_set(board_idx, pos)) {
             is_solved = false;
             int count = 0;
             for (uint8_t num = 0; num < 9; ++num) {
-                if (!boards.is_blocked(board_idx, pos, num)) ++count;
+                if (!boards.is_blocked(board_idx, pos, num)) {
+                    ++count;
+                }
             }
             if (count < min_poss) {
                 min_poss = count;
@@ -124,6 +181,7 @@ __global__ void find_next_cell_kernel(SudokuBoards& boards, uint8_t* next_pos, u
             }
         }
     }
+
     uint32_t num_children;
     if (is_solved) {
         next_pos[board_idx] = 200;
@@ -137,15 +195,25 @@ __global__ void find_next_cell_kernel(SudokuBoards& boards, uint8_t* next_pos, u
         next_pos[board_idx] = best_pos;
         num_children = min_poss;
     }
+
     num_children_out[board_idx] = num_children;
+
+    cuda::atomic<uint32_t>& total = *reinterpret_cast<cuda::atomic<uint32_t>*>(total_new);
+    total.fetch_add(num_children);
 }
+
+// Kernel 2: Generate Children
 __global__ void generate_children_kernel(SudokuBoards& in_boards, uint8_t* next_pos, uint32_t* prefixes, SudokuBoards& out_boards) {
     uint32_t board_idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (board_idx >= in_boards.get_num_boards()) return;
+
     uint8_t pos = next_pos[board_idx];
-    if (pos == 255) return;
+    if (pos == 255) return; // impossible, no children
+
     uint32_t out_start = prefixes[board_idx];
+
     if (pos == 200) {
+        // solved, copy as is
         uint32_t out_idx = out_start;
         for (uint8_t field = 0; field < 19; ++field) {
             out_boards.repr[field * out_boards.get_num_boards() + out_idx] =
@@ -153,229 +221,183 @@ __global__ void generate_children_kernel(SudokuBoards& in_boards, uint8_t* next_
         }
         return;
     }
+
+    // generate children
     uint32_t out_idx = out_start;
     for (uint8_t num = 0; num < 9; ++num) {
         if (!in_boards.is_blocked(board_idx, pos, num)) {
+            // copy board
             for (uint8_t field = 0; field < 19; ++field) {
                 out_boards.repr[field * out_boards.get_num_boards() + out_idx] =
                     in_boards.repr[field * in_boards.get_num_boards() + board_idx];
             }
+            // set the new value
             out_boards.set(out_idx, pos, num);
             ++out_idx;
         }
     }
 }
-std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards& inputs, bool supports_prefetch) {
+
+// Main function
+std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards& inputs) {
     uint32_t original_num = inputs.get_num_boards();
-    SudokuBoards current(std::move(inputs));
+    SudokuBoards current(std::move(inputs));  // Move from inputs; caller should be aware inputs is invalidated
+
     for (int level = 0; level < MAX_LEVELS; ++level) {
         uint32_t num_boards = current.get_num_boards();
-        std::cout << "Level " << level << ", boards: " << num_boards << std::endl;
+		std::cout << "Level " << level << ", Boards: " << num_boards << std::endl;
         if (num_boards == 0) break;
-        uint8_t* next_pos = nullptr;
-        uint32_t* num_children_out = nullptr;
+
+        uint8_t* next_pos;
         cudaError_t err = cudaMallocManaged(&next_pos, num_boards * sizeof(uint8_t));
-        if (err != cudaSuccess) {
-            fprintf(stderr, "cudaMallocManaged (next_pos) failed: %s\n", cudaGetErrorString(err));
-            break;
-        }
+        if (err != cudaSuccess) { /* Handle error */ }
+
+        uint32_t* num_children_out;
         err = cudaMallocManaged(&num_children_out, num_boards * sizeof(uint32_t));
-        if (err != cudaSuccess) {
-            fprintf(stderr, "cudaMallocManaged (num_children_out) failed: %s\n", cudaGetErrorString(err));
-            break;
-        }
-        // Prefetch auxiliaries to GPU if supported
-        if (supports_prefetch) {
-            err = cudaMemPrefetchAsync(next_pos, num_boards * sizeof(uint8_t), 0, nullptr);
-            if (err != cudaSuccess) {
-                fprintf(stderr, "Warning: cudaMemPrefetchAsync (next_pos) to GPU failed: %s (continuing)\n", cudaGetErrorString(err));
-            }
-            err = cudaMemPrefetchAsync(num_children_out, num_boards * sizeof(uint32_t), 0, nullptr);
-            if (err != cudaSuccess) {
-                fprintf(stderr, "Warning: cudaMemPrefetchAsync (num_children_out) to GPU failed: %s (continuing)\n", cudaGetErrorString(err));
-            }
-        }
-        int threads = 128;
+        if (err != cudaSuccess) { /* Handle error */ }
+
+        uint32_t* total_new;
+        err = cudaMallocManaged(&total_new, sizeof(uint32_t));
+        if (err != cudaSuccess) { /* Handle error */ }
+        *total_new = 0;
+
+        int threads = 256;
         int blocks = (num_boards + threads - 1) / threads;
-        find_next_cell_kernel << <blocks, threads >> > (current, next_pos, num_children_out);
+        find_next_cell_kernel << <blocks, threads >> > (current, next_pos, num_children_out, total_new);
         cudaDeviceSynchronize();
-        err = cudaGetLastError();
-        if (err != cudaSuccess) {
-            fprintf(stderr, "find_next_cell_kernel failed: %s\n", cudaGetErrorString(err));
-            // Handle error as needed, e.g., break or exit
-        }
-        // Prefetch num_children_out back to CPU if supported
-        if (supports_prefetch) {
-            err = cudaMemPrefetchAsync(num_children_out, num_boards * sizeof(uint32_t), cudaCpuDeviceId, nullptr);
-            if (err != cudaSuccess) {
-                fprintf(stderr, "Warning: cudaMemPrefetchAsync (num_children_out) to CPU failed: %s (continuing)\n", cudaGetErrorString(err));
-            }
-        }
-        // Compute new_num and prefixes on CPU
-        uint32_t* prefixes = nullptr;
-        err = cudaMallocManaged(&prefixes, num_boards * sizeof(uint32_t));
-        if (err != cudaSuccess) {
-            fprintf(stderr, "cudaMallocManaged (prefixes) failed: %s\n", cudaGetErrorString(err));
-            break;
-        }
-        if (supports_prefetch) {
-            err = cudaMemPrefetchAsync(prefixes, num_boards * sizeof(uint32_t), 0, nullptr);
-            if (err != cudaSuccess) {
-                fprintf(stderr, "Warning: cudaMemPrefetchAsync (prefixes) to GPU failed: %s (continuing)\n", cudaGetErrorString(err));
-            }
-        }
-        uint32_t new_num = 0;
-        for (uint32_t i = 0; i < num_boards; ++i) {
-            prefixes[i] = new_num;
-            new_num += num_children_out[i];
-        }
+
+        uint32_t new_num = *total_new;
         if (new_num == 0) {
-            cudaFree(next_pos); cudaFree(num_children_out);
-            cudaFree(prefixes);
+            cudaFree(next_pos);
+            cudaFree(num_children_out);
+            cudaFree(total_new);
             break;
         }
+
+        uint32_t* prefixes;
+        err = cudaMallocManaged(&prefixes, num_boards * sizeof(uint32_t));
+        if (err != cudaSuccess) { /* Handle error */ }
+
+        thrust::exclusive_scan(thrust::device,
+            thrust::device_ptr<uint32_t>(num_children_out),
+            thrust::device_ptr<uint32_t>(num_children_out + num_boards),
+            thrust::device_ptr<uint32_t>(prefixes));
+
         SudokuBoards out_boards(new_num);
+
         generate_children_kernel << <blocks, threads >> > (current, next_pos, prefixes, out_boards);
         cudaDeviceSynchronize();
-        err = cudaGetLastError();
-        if (err != cudaSuccess) {
-            fprintf(stderr, "generate_children_kernel failed: %s\n", cudaGetErrorString(err));
-            // Handle error
-        }
+
         cudaFree(next_pos);
         cudaFree(num_children_out);
+        cudaFree(total_new);
         cudaFree(prefixes);
+
         current = std::move(out_boards);
     }
-    // Prefetch final results to CPU if supported
+
+    // Prefetch final data to host
     size_t bytes = 19ULL * current.get_num_boards() * sizeof(uint32_t);
-    cudaError_t err;
-    if (supports_prefetch) {
-        err = cudaMemPrefetchAsync(current.repr, bytes, cudaCpuDeviceId, nullptr);
-        if (err != cudaSuccess) {
-            fprintf(stderr, "Final prefetch to CPU failed: %s (continuing)\n", cudaGetErrorString(err));
-        }
-    }
+    cudaMemPrefetchAsync(current.repr, bytes, cudaCpuDeviceId, 0);
     cudaDeviceSynchronize();
+
     std::vector<std::array<uint8_t, 81>> solutions(original_num);
     std::vector<bool> found(original_num, false);
+
     for (uint32_t board_idx = 0; board_idx < current.get_num_boards(); ++board_idx) {
         uint32_t id = current.get_id(board_idx);
         if (id >= original_num || found[id]) continue;
+
         auto& sol = solutions[id];
         bool valid = true;
         for (uint8_t pos = 0; pos < 81; ++pos) {
             uint8_t num = current.get_number_at_pos(board_idx, pos);
-            if (num == 0) { valid = false; break; }
+            if (num == 0) {
+                valid = false;
+                break;
+            }
             sol[pos] = num;
         }
-        if (valid) found[id] = true;
+        if (valid) {
+            found[id] = true;
+        }
     }
+
     return solutions;
 }
+
 void solveGPU(const std::string& input_file, const std::string& output_file, int count) {
-    // Check for available GPUs with error checking
-    int deviceCount;
-    cudaError_t err = cudaGetDeviceCount(&deviceCount);
-    if (err != cudaSuccess) {
-        std::cerr << "cudaGetDeviceCount failed: " << cudaGetErrorString(err) << std::endl;
-        return;
-    }
-    if (deviceCount == 0) {
-        std::cerr << "No CUDA devices found. Cannot run GPU solver." << std::endl;
-        return;
-    }
-    // Set to device 0 with error checking
-    err = cudaSetDevice(0);
-    if (err != cudaSuccess) {
-        std::cerr << "cudaSetDevice failed: " << cudaGetErrorString(err) << std::endl;
-        return;
-    }
-    // Optional reset
-    err = cudaDeviceReset();
-    if (err != cudaSuccess) {
-        std::cerr << "Warning: cudaDeviceReset failed: " << cudaGetErrorString(err) << " (continuing)" << std::endl;
-    }
-    // Get device properties to diagnose CC
-    cudaDeviceProp prop;
-    err = cudaGetDeviceProperties(&prop, 0);
-    if (err != cudaSuccess) {
-        std::cerr << "cudaGetDeviceProperties failed: " << cudaGetErrorString(err) << std::endl;
-        return;
-    }
-    std::cout << "Using device: " << prop.name << ", Compute capability: " << prop.major << "." << prop.minor << std::endl;
-
-    bool supports_prefetch = (prop.major >= 6);
-
     std::ifstream file(input_file);
     if (!file.is_open()) {
         std::cerr << "Failed to open file: " << input_file << std::endl;
         return;
     }
+
     std::string line;
     std::vector<SudokuBoards> temp_boards;
     int id = 0;
     while (std::getline(file, line) && id < count) {
         if (line.length() != 81) continue;
+
         SudokuBoards temp(1);
-        // Prefetch if supported
-        if (supports_prefetch) {
-            size_t bytes = 19 * sizeof(uint32_t);
-            err = cudaMemPrefetchAsync(temp.repr, bytes, 0, nullptr);
-            if (err != cudaSuccess) {
-                fprintf(stderr, "Warning: cudaMemPrefetchAsync to GPU failed: %s (continuing)\n", cudaGetErrorString(err));
-            }
-        }
         bool valid = true;
         for (uint8_t pos = 0; pos < 81; ++pos) {
             char c = line[pos];
-            if (c < '0' || c > '9') { valid = false; break; }
+            if (c < '0' || c > '9') {
+                valid = false;
+                break;
+            }
             if (c != '0') {
                 uint8_t number = c - '0' - 1;
-                if (temp.is_blocked(0, pos, number)) { valid = false; break; }
+                if (temp.is_blocked(0, pos, number)) {
+                    valid = false;
+                    break;
+                }
                 temp.set(0, pos, number);
             }
         }
         if (valid) {
-            temp.repr[18] = id; // set ID
             temp_boards.push_back(std::move(temp));
             ++id;
         }
     }
     file.close();
+
     uint32_t num_boards = temp_boards.size();
     if (num_boards == 0) return;
+
     SudokuBoards inputs(num_boards);
-    // Prefetch inputs if supported
-    if (supports_prefetch) {
-        size_t bytes = 19ULL * num_boards * sizeof(uint32_t);
-        err = cudaMemPrefetchAsync(inputs.repr, bytes, 0, nullptr);
-        if (err != cudaSuccess) {
-            fprintf(stderr, "Warning: cudaMemPrefetchAsync to GPU failed: %s (continuing)\n", cudaGetErrorString(err));
-        }
-    }
     for (uint32_t b = 0; b < num_boards; ++b) {
-        for (uint8_t f = 0; f < 19; ++f) {
+        for (uint8_t f = 0; f < 18; ++f) {
             inputs.repr[f * num_boards + b] = temp_boards[b].repr[f];
         }
+        inputs.repr[18 * num_boards + b] = b;
     }
-    std::vector<std::array<uint8_t, 81>> solutions = solve_multiple_sudoku(inputs, supports_prefetch);
+
+    std::vector<std::array<uint8_t, 81>> solutions = solve_multiple_sudoku(inputs);
+
     std::ofstream out(output_file);
     if (!out.is_open()) {
         std::cerr << "Failed to open output file: " << output_file << std::endl;
         return;
     }
     for (const auto& solution : solutions) {
-        bool has_solution = true;
-        for (uint8_t n : solution) {
-            if (n == 0) { has_solution = false; break; }
+        bool is_valid_solution = true;
+        for (uint8_t pos = 0; pos < 81; ++pos) {
+            uint8_t num = solution[pos];
+            if (num == 0) {
+                is_valid_solution = false;
+                break;
+            }
         }
-        if (!has_solution) {
+        if (!is_valid_solution) {
             out << "No solution" << std::endl;
             continue;
         }
-        for (uint8_t n : solution)
-            out << static_cast<char>('0' + n);
+        for (uint8_t pos = 0; pos < 81; ++pos) {
+            uint8_t num = solution[pos];
+            out << static_cast<char>('0' + num);
+        }
         out << std::endl;
     }
     out.close();
