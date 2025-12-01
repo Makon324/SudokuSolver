@@ -54,7 +54,7 @@ public:
             exit(1);
         }
         cudaMemset(repr, 0, bytes);
-        // Prefetch to GPU only if supported (checked outside class)
+        // Prefetch handled outside
     }
     // Delete copy
     SudokuBoards(const SudokuBoards&) = delete;
@@ -171,7 +171,7 @@ __global__ void generate_children_kernel(SudokuBoards& in_boards, uint8_t* next_
         }
     }
 }
-std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards& inputs) {
+std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards& inputs, bool supports_prefetch) {
     uint32_t original_num = inputs.get_num_boards();
     SudokuBoards current(std::move(inputs));
     for (int level = 0; level < MAX_LEVELS; ++level) {
@@ -190,9 +190,17 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards& inputs)
             fprintf(stderr, "cudaMallocManaged (num_children_out) failed: %s\n", cudaGetErrorString(err));
             break;
         }
-        // Prefetch auxiliaries to GPU
-        cudaMemPrefetchAsync(next_pos, num_boards * sizeof(uint8_t), 0, nullptr);
-        cudaMemPrefetchAsync(num_children_out, num_boards * sizeof(uint32_t), 0, nullptr);
+        // Prefetch auxiliaries to GPU if supported
+        if (supports_prefetch) {
+            err = cudaMemPrefetchAsync(next_pos, num_boards * sizeof(uint8_t), 0, nullptr);
+            if (err != cudaSuccess) {
+                fprintf(stderr, "Warning: cudaMemPrefetchAsync (next_pos) to GPU failed: %s (continuing)\n", cudaGetErrorString(err));
+            }
+            err = cudaMemPrefetchAsync(num_children_out, num_boards * sizeof(uint32_t), 0, nullptr);
+            if (err != cudaSuccess) {
+                fprintf(stderr, "Warning: cudaMemPrefetchAsync (num_children_out) to GPU failed: %s (continuing)\n", cudaGetErrorString(err));
+            }
+        }
         int threads = 128;
         int blocks = (num_boards + threads - 1) / threads;
         find_next_cell_kernel << <blocks, threads >> > (current, next_pos, num_children_out);
@@ -202,8 +210,13 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards& inputs)
             fprintf(stderr, "find_next_cell_kernel failed: %s\n", cudaGetErrorString(err));
             // Handle error as needed, e.g., break or exit
         }
-        // Prefetch num_children_out back to CPU for loop access
-        cudaMemPrefetchAsync(num_children_out, num_boards * sizeof(uint32_t), cudaCpuDeviceId, nullptr);
+        // Prefetch num_children_out back to CPU if supported
+        if (supports_prefetch) {
+            err = cudaMemPrefetchAsync(num_children_out, num_boards * sizeof(uint32_t), cudaCpuDeviceId, nullptr);
+            if (err != cudaSuccess) {
+                fprintf(stderr, "Warning: cudaMemPrefetchAsync (num_children_out) to CPU failed: %s (continuing)\n", cudaGetErrorString(err));
+            }
+        }
         // Compute new_num and prefixes on CPU
         uint32_t* prefixes = nullptr;
         err = cudaMallocManaged(&prefixes, num_boards * sizeof(uint32_t));
@@ -211,7 +224,12 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards& inputs)
             fprintf(stderr, "cudaMallocManaged (prefixes) failed: %s\n", cudaGetErrorString(err));
             break;
         }
-        cudaMemPrefetchAsync(prefixes, num_boards * sizeof(uint32_t), 0, nullptr);  // Will be read by GPU kernel
+        if (supports_prefetch) {
+            err = cudaMemPrefetchAsync(prefixes, num_boards * sizeof(uint32_t), 0, nullptr);
+            if (err != cudaSuccess) {
+                fprintf(stderr, "Warning: cudaMemPrefetchAsync (prefixes) to GPU failed: %s (continuing)\n", cudaGetErrorString(err));
+            }
+        }
         uint32_t new_num = 0;
         for (uint32_t i = 0; i < num_boards; ++i) {
             prefixes[i] = new_num;
@@ -237,9 +255,12 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards& inputs)
     }
     // Prefetch final results to CPU if supported
     size_t bytes = 19ULL * current.get_num_boards() * sizeof(uint32_t);
-    cudaError_t err = cudaMemPrefetchAsync(current.repr, bytes, cudaCpuDeviceId, nullptr);
-    if (err != cudaSuccess) {
-        fprintf(stderr, "Final prefetch to CPU failed: %s (continuing)\n", cudaGetErrorString(err));
+    cudaError_t err;
+    if (supports_prefetch) {
+        err = cudaMemPrefetchAsync(current.repr, bytes, cudaCpuDeviceId, nullptr);
+        if (err != cudaSuccess) {
+            fprintf(stderr, "Final prefetch to CPU failed: %s (continuing)\n", cudaGetErrorString(err));
+        }
     }
     cudaDeviceSynchronize();
     std::vector<std::array<uint8_t, 81>> solutions(original_num);
@@ -252,7 +273,7 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards& inputs)
         for (uint8_t pos = 0; pos < 81; ++pos) {
             uint8_t num = current.get_number_at_pos(board_idx, pos);
             if (num == 0) { valid = false; break; }
-            sol[pos] = num - 1;  // Correct to 0-8 if needed, but output is '1'-'9'
+            sol[pos] = num;
         }
         if (valid) found[id] = true;
     }
@@ -344,7 +365,7 @@ void solveGPU(const std::string& input_file, const std::string& output_file, int
             inputs.repr[f * num_boards + b] = temp_boards[b].repr[f];
         }
     }
-    std::vector<std::array<uint8_t, 81>> solutions = solve_multiple_sudoku(inputs);
+    std::vector<std::array<uint8_t, 81>> solutions = solve_multiple_sudoku(inputs, supports_prefetch);
     std::ofstream out(output_file);
     if (!out.is_open()) {
         std::cerr << "Failed to open output file: " << output_file << std::endl;
