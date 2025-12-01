@@ -192,6 +192,7 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards& inputs)
     SudokuBoards current(std::move(inputs));
     for (int level = 0; level < MAX_LEVELS; ++level) {
         uint32_t num_boards = current.get_num_boards();
+		std::cout << "Level " << level << ", number of boards: " << num_boards << std::endl;
         if (num_boards == 0) break;
         uint8_t* next_pos = nullptr;
         uint32_t* num_children_out = nullptr;
