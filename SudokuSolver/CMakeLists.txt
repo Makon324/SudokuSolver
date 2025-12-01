@@ -1,12 +1,11 @@
 cmake_minimum_required(VERSION 3.18)
-project(sudoku CUDA CXX)
+project(sudoku LANGUAGES CUDA CXX)
 
-find_package(CUDA REQUIRED)
-
+set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CUDA_STANDARD 11)
 set(CMAKE_CUDA_ARCHITECTURES 35)
-set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -gencode arch=compute_35,code=sm_35")
+
+# Suppress deprecated GPU targets warning
+set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Wno-deprecated-gpu-targets")
 
 add_executable(sudoku GPUSolver.cu)
-
-target_link_libraries(sudoku ${CUDA_LIBRARIES})
