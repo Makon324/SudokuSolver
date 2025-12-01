@@ -229,7 +229,28 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards& inputs)
         cudaFree(prefixes);
         current = std::move(out_boards);
     }
-    // ... (rest of the function unchanged)
+    // Bring final results to CPU (prefetch commented out to avoid warning; data migrates on access)
+    // size_t bytes = 19ULL * current.get_num_boards() * sizeof(uint32_t);
+    // cudaError_t err = cudaMemPrefetchAsync(current.repr, bytes, cudaCpuDeviceId, nullptr);
+    // if (err != cudaSuccess) {
+    //     fprintf(stderr, "Final prefetch to CPU failed: %s (continuing)\n", cudaGetErrorString(err));
+    // }
+    cudaDeviceSynchronize();
+    std::vector<std::array<uint8_t, 81>> solutions(original_num);
+    std::vector<bool> found(original_num, false);
+    for (uint32_t board_idx = 0; board_idx < current.get_num_boards(); ++board_idx) {
+        uint32_t id = current.get_id(board_idx);
+        if (id >= original_num || found[id]) continue;
+        auto& sol = solutions[id];
+        bool valid = true;
+        for (uint8_t pos = 0; pos < 81; ++pos) {
+            uint8_t num = current.get_number_at_pos(board_idx, pos);
+            if (num == 0) { valid = false; break; }
+            sol[pos] = num;
+        }
+        if (valid) found[id] = true;
+    }
+    return solutions;
 }
 void solveGPU(const std::string& input_file, const std::string& output_file, int count) {
     // Check for available GPUs
