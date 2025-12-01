@@ -4,15 +4,9 @@
 #include <string>
 #include <array>
 #include <vector>
-#include <tuple>
-#include <stack>
 #include <cuda.h>
 #include <cuda_runtime.h>
-#include <cuda/atomic>
 #include <device_launch_parameters.h>
-#include <thrust/execution_policy.h>
-#include <thrust/device_ptr.h>
-
 
 class SudokuBoards
 {
