@@ -9,7 +9,6 @@
 
 #include <cuda.h>
 #include <cuda_runtime.h>
-#include <cuda/atomic>
 #include <device_launch_parameters.h>
 
 #include <thrust/execution_policy.h>
@@ -158,7 +157,7 @@ public:
 const int MAX_LEVELS = 81;
 
 // Kernel 1: Find Next Cell (MRV), return next_pos and number of boards to be generated
-__global__ void find_next_cell_kernel(SudokuBoards& boards, uint8_t* next_pos, uint32_t* num_children_out, uint32_t* total_new) {
+__global__ void find_next_cell_kernel(SudokuBoards& boards, uint8_t* next_pos, uint32_t* num_children_out) {
     uint32_t board_idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (board_idx >= boards.get_num_boards()) return;
 
@@ -197,9 +196,6 @@ __global__ void find_next_cell_kernel(SudokuBoards& boards, uint8_t* next_pos, u
     }
 
     num_children_out[board_idx] = num_children;
-
-    cuda::atomic<uint32_t>& total = *reinterpret_cast<cuda::atomic<uint32_t>*>(total_new);
-    total.fetch_add(num_children);
 }
 
 // Kernel 2: Generate Children
@@ -245,7 +241,7 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards& inputs)
 
     for (int level = 0; level < MAX_LEVELS; ++level) {
         uint32_t num_boards = current.get_num_boards();
-		std::cout << "Level " << level << ", Boards: " << num_boards << std::endl;
+        std::cout << "Level " << level << ", Boards: " << num_boards << std::endl;
         if (num_boards == 0) break;
 
         uint8_t* next_pos;
@@ -256,21 +252,19 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards& inputs)
         err = cudaMallocManaged(&num_children_out, num_boards * sizeof(uint32_t));
         if (err != cudaSuccess) { /* Handle error */ }
 
-        uint32_t* total_new;
-        err = cudaMallocManaged(&total_new, sizeof(uint32_t));
-        if (err != cudaSuccess) { /* Handle error */ }
-        *total_new = 0;
-
         int threads = 256;
         int blocks = (num_boards + threads - 1) / threads;
-        find_next_cell_kernel << <blocks, threads >> > (current, next_pos, num_children_out, total_new);
+        find_next_cell_kernel << <blocks, threads >> > (current, next_pos, num_children_out);
         cudaDeviceSynchronize();
 
-        uint32_t new_num = *total_new;
+        uint32_t new_num = 0;
+        for (uint32_t i = 0; i < num_boards; ++i) {
+            new_num += num_children_out[i];
+        }
+
         if (new_num == 0) {
             cudaFree(next_pos);
             cudaFree(num_children_out);
-            cudaFree(total_new);
             break;
         }
 
@@ -290,7 +284,6 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards& inputs)
 
         cudaFree(next_pos);
         cudaFree(num_children_out);
-        cudaFree(total_new);
         cudaFree(prefixes);
 
         current = std::move(out_boards);
