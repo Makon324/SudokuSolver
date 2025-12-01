@@ -12,7 +12,7 @@
 #include <device_launch_parameters.h>
 #include <thrust/execution_policy.h>
 #include <thrust/device_ptr.h>
-#include <thrust/reduce.h>
+
 
 class SudokuBoards
 {
@@ -195,37 +195,30 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards& inputs)
         if (num_boards == 0) break;
         uint8_t* next_pos = nullptr;
         uint32_t* num_children_out = nullptr;
-        // Removed: uint32_t* total_new = nullptr;
         cudaMallocManaged(&next_pos, num_boards * sizeof(uint8_t));
         cudaMallocManaged(&num_children_out, num_boards * sizeof(uint32_t));
-        // Removed: cudaMallocManaged(&total_new, sizeof(uint32_t));
-        // Removed: *total_new = 0;
         int threads = 128;
         int blocks = (num_boards + threads - 1) / threads;
-        find_next_cell_kernel << <blocks, threads >> > (current, next_pos, num_children_out);  // Removed total_new arg
+        find_next_cell_kernel << <blocks, threads >> > (current, next_pos, num_children_out);
         cudaDeviceSynchronize();
-        // Replaced atomic with this:
-        uint32_t new_num = thrust::reduce(thrust::device,
-            thrust::device_ptr<uint32_t>(num_children_out),
-            thrust::device_ptr<uint32_t>(num_children_out + num_boards),
-            0u);
-        if (new_num == 0) {
-            cudaFree(next_pos); cudaFree(num_children_out);
-            // Removed: cudaFree(total_new);
-            break;
-        }
+        // New: Compute new_num and prefixes on CPU
         uint32_t* prefixes = nullptr;
         cudaMallocManaged(&prefixes, num_boards * sizeof(uint32_t));
-        thrust::exclusive_scan(thrust::device,
-            thrust::device_ptr<uint32_t>(num_children_out),
-            thrust::device_ptr<uint32_t>(num_children_out + num_boards),
-            thrust::device_ptr<uint32_t>(prefixes));
+        uint32_t new_num = 0;
+        for (uint32_t i = 0; i < num_boards; ++i) {
+            prefixes[i] = new_num;
+            new_num += num_children_out[i];
+        }
+        if (new_num == 0) {
+            cudaFree(next_pos); cudaFree(num_children_out);
+            cudaFree(prefixes);
+            break;
+        }
         SudokuBoards out_boards(new_num);
         generate_children_kernel << <blocks, threads >> > (current, next_pos, prefixes, out_boards);
         cudaDeviceSynchronize();
         cudaFree(next_pos);
         cudaFree(num_children_out);
-        // Removed: cudaFree(total_new);
         cudaFree(prefixes);
         current = std::move(out_boards);
     }
