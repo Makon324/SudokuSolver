@@ -66,20 +66,6 @@ public:
         }
 
         cudaMemset(repr, 0, bytes);
-
-        // Prefetch to GPU 0
-        err = cudaMemPrefetchAsync(repr, bytes, 0, 0);
-        if (err != cudaSuccess) {
-            fprintf(stderr, "cudaMemPrefetchAsync failed: %s\n", cudaGetErrorString(err));
-            exit(1);
-        }
-
-        // Hint that data is read mostly
-        err = cudaMemAdvise(repr, bytes, cudaMemAdviseSetReadMostly, 0);
-        if (err != cudaSuccess) {
-            fprintf(stderr, "cudaMemAdvise failed: %s\n", cudaGetErrorString(err));
-            exit(1);
-        }
     }
 
     // Delete copy constructor and assignment (managed memory doesn't like shallow copies)
@@ -285,9 +271,8 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards& inputs)
         current = std::move(out_boards);
     }
 
-    // Prefetch final data to host
-    size_t bytes = 19ULL * current.get_num_boards() * sizeof(uint32_t);
-    cudaMemPrefetchAsync(current.repr, bytes, cudaCpuDeviceId, 0);
+    // Prefetch final data to host removed for compatibility
+
     cudaDeviceSynchronize();
 
     std::vector<std::array<uint8_t, 81>> solutions(original_num);
@@ -300,12 +285,12 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards& inputs)
         auto& sol = solutions[id];
         bool valid = true;
         for (uint8_t pos = 0; pos < 81; ++pos) {
-            uint8_t num = current.get_number_at_pos(board_idx, pos) - 1;  // Adjust if necessary
-            if (num + 1 == 0) {  // Check if num+1 was 0, but since num is from 0-8? Wait, get_number_at_pos returns &15, but set is +1
+            uint8_t num = current.get_number_at_pos(board_idx, pos);
+            if (num == 0) {
                 valid = false;
                 break;
             }
-            sol[pos] = num + 1;
+            sol[pos] = num;
         }
         if (valid) {
             found[id] = true;
