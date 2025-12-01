@@ -56,7 +56,7 @@ public:
     __device__ __host__ uint32_t get_num_boards() const { return num_boards; }
 
     // Constructor: allocate unified memory
-    SudokuBoards::SudokuBoards(uint32_t n) : num_boards(n) {
+    SudokuBoards(uint32_t n) : num_boards(n) {
         size_t bytes = 19ULL * n * sizeof(uint32_t);
 
         cudaError_t err = cudaMallocManaged(&repr, bytes);
@@ -67,19 +67,15 @@ public:
 
         cudaMemset(repr, 0, bytes);
 
-        // Define locations (modern API requires cudaMemLocation struct)
-        cudaMemLocation gpu_loc = { cudaMemLocationTypeDevice, 0 };  // GPU device 0
-        cudaMemLocation cpu_loc = { cudaMemLocationTypeHost, 0 };    // Host (CPU); id is ignored for Host type
-
-        // Best practice: everything lives on GPU
-        err = cudaMemPrefetchAsync(repr, bytes, gpu_loc, 0, nullptr);  // Prefetch to GPU 0; flags=0, default stream
+        // Prefetch to GPU 0
+        err = cudaMemPrefetchAsync(repr, bytes, 0, 0);
         if (err != cudaSuccess) {
             fprintf(stderr, "cudaMemPrefetchAsync failed: %s\n", cudaGetErrorString(err));
             exit(1);
         }
 
-        // Optional: hint that CPU will only read results at the very end (read-mostly for host access)
-        err = cudaMemAdvise(repr, bytes, cudaMemAdviseSetReadMostly, cpu_loc);
+        // Hint that data is read mostly
+        err = cudaMemAdvise(repr, bytes, cudaMemAdviseSetReadMostly, 0);
         if (err != cudaSuccess) {
             fprintf(stderr, "cudaMemAdvise failed: %s\n", cudaGetErrorString(err));
             exit(1);
@@ -304,12 +300,12 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards& inputs)
         auto& sol = solutions[id];
         bool valid = true;
         for (uint8_t pos = 0; pos < 81; ++pos) {
-            uint8_t num = current.get_number_at_pos(board_idx, pos);
-            if (num == 0) {
+            uint8_t num = current.get_number_at_pos(board_idx, pos) - 1;  // Adjust if necessary
+            if (num + 1 == 0) {  // Check if num+1 was 0, but since num is from 0-8? Wait, get_number_at_pos returns &15, but set is +1
                 valid = false;
                 break;
             }
-            sol[pos] = num;
+            sol[pos] = num + 1;
         }
         if (valid) {
             found[id] = true;
