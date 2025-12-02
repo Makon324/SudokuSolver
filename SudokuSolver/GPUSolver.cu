@@ -16,6 +16,7 @@
 #include <thrust/device_ptr.h>
 #include <thrust/scan.h>
 #include <thrust/reduce.h>  // Added for reduce
+#include <thrust/count.h>   // Added for count_if
 #include <thrust/system/cuda/execution_policy.h>
 
 class SudokuBoards
@@ -251,6 +252,14 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards* current
             break;
         }
 
+        // Compute unsolved_count using Thrust count_if
+        uint32_t unsolved_count = thrust::count_if(thrust::cuda::par.on(stream),
+            thrust::device_ptr<uint8_t>(d_next_pos),
+            thrust::device_ptr<uint8_t>(d_next_pos + num_boards),
+            [] __device__(uint8_t pos) { return pos < 200; });
+
+        bool all_solved = (unsolved_count == 0);
+
         uint32_t* d_prefixes = nullptr;
         err = cudaMalloc(&d_prefixes, num_boards * sizeof(uint32_t));
         if (err != cudaSuccess) { /* Handle error */ }
@@ -274,6 +283,10 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards* current
 
         // Move to new
         current = out_ptr;
+
+        if (all_solved) {
+            break;
+        }
     }
 
     uint32_t final_num_boards = current->get_num_boards();

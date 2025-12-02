@@ -5,8 +5,8 @@ set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CUDA_STANDARD 14)
 set(CMAKE_CUDA_ARCHITECTURES 35)
 
-# Suppress deprecated GPU targets warning
-set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Wno-deprecated-gpu-targets")
+# Suppress deprecated GPU targets warning and enable extended lambdas
+set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Wno-deprecated-gpu-targets --expt-extended-lambda")
 
 add_executable(sudoku main.cpp CPUSolver.cpp GPUSolver.cu)
 set_target_properties(sudoku PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
