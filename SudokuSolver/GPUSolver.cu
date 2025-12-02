@@ -10,12 +10,15 @@
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wreorder"
 #include <thrust/execution_policy.h>
 #include <thrust/device_ptr.h>
 #include <thrust/scan.h>
 #include <thrust/reduce.h>
 #include <thrust/count.h>
 #include <thrust/system/cuda/execution_policy.h>
+#pragma GCC diagnostic pop
 
 // Constants for Sudoku dimensions and representation
 constexpr int GRID_SIZE = 9;
