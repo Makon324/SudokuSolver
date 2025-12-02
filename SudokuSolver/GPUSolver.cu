@@ -353,24 +353,24 @@ void solveGPU(const std::string& input_file, const std::string& output_file, int
     }
     file.close();
 
-uint32_t num_boards = temp_boards.size();
-if (num_boards == 0) return;
+    uint32_t num_boards = temp_boards.size();
+    if (num_boards == 0) return;
 
-SudokuBoards* inputs_ptr = nullptr;
-cudaError_t err = cudaMallocManaged(&inputs_ptr, sizeof(SudokuBoards));
-if (err != cudaSuccess) { /* Handle error, e.g., fprintf(stderr, "Failed to allocate managed memory for inputs: %s\n", cudaGetErrorString(err)); exit(1); */ }
-new (inputs_ptr) SudokuBoards(num_boards);
+    SudokuBoards* inputs_ptr = nullptr;
+    cudaError_t err = cudaMallocManaged(&inputs_ptr, sizeof(SudokuBoards));
+    if (err != cudaSuccess) { /* Handle error, e.g., fprintf(stderr, "Failed to allocate managed memory for inputs: %s\n", cudaGetErrorString(err)); exit(1); */ }
+    new (inputs_ptr) SudokuBoards(num_boards);
 
-for (uint32_t b = 0; b < num_boards; ++b) {
-    for (uint8_t f = 0; f < 18; ++f) {
-        inputs_ptr->repr[f * num_boards + b] = temp_boards[b].repr[f];
+    for (uint32_t b = 0; b < num_boards; ++b) {
+        for (uint8_t f = 0; f < 18; ++f) {
+            inputs_ptr->repr[f * num_boards + b] = temp_boards[b].repr[f];
+        }
+        inputs_ptr->repr[18 * num_boards + b] = b;
     }
-    inputs_ptr->repr[18 * num_boards + b] = b;
-}
 
-std::vector<std::array<uint8_t, 81>> solutions = solve_multiple_sudoku(inputs_ptr);
+    std::vector<std::array<uint8_t, 81>> solutions = solve_multiple_sudoku(inputs_ptr);
 
-// Clean up inputs_ptr after the call (solve_multiple_sudoku will have freed it internally, but confirm in the modified function)
+    // Clean up inputs_ptr after the call (solve_multiple_sudoku will have freed it internally, but confirm in the modified function)
 
     std::ofstream out(output_file);
     if (!out.is_open()) {
