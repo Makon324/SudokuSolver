@@ -15,66 +15,29 @@
 #include <thrust/execution_policy.h>
 #include <thrust/device_ptr.h>
 #include <thrust/scan.h>
-
-
+#include <thrust/system/cuda/execution_policy.h>
 
 class SudokuBoards
 {
-    uint32_t num_boards;
-
-    __device__ __host__ inline void set_index(uint32_t board_idx, uint16_t index) {
-        uint8_t repr_idx = index >> 5; // index / 32
-        uint8_t bit_index = index & 31; // index % 32
-        repr[repr_idx * num_boards + board_idx] |= (1U << bit_index);
-    }
-
-    __device__ __host__ inline void unset_index(uint32_t board_idx, uint16_t index) {
-        uint8_t repr_idx = index >> 5; // index / 32
-        uint8_t bit_index = index & 31; // index % 32
-        repr[repr_idx * num_boards + board_idx] &= ~(1U << bit_index);
-    }
-
-    __device__ __host__ inline bool get_index(uint32_t board_idx, uint16_t index) {
-        uint8_t repr_idx = index >> 5; // index / 32
-        uint8_t bit_index = index & 31; // index % 32
-        return ((repr[repr_idx * num_boards + board_idx] & (1U << bit_index)) > 0);
-    }
-
-    __device__ __host__ inline void set_number_at_pos(uint32_t board_idx, uint8_t pos, uint8_t number) {
-        uint8_t repr_idx = 17 - (pos >> 3); // end - (pos / 8)
-        uint8_t bit_index = 28 - ((pos & 7) << 2); // 28 - (pos % 8) * 4
-        repr[repr_idx * num_boards + board_idx] |= (number << bit_index);
-    }
-
-    __device__ __host__ inline void unset_number_at_pos(uint32_t board_idx, uint8_t pos) {
-        uint8_t repr_idx = 17 - (pos >> 3); // end - (pos / 8)
-        uint8_t bit_index = 28 - ((pos & 7) << 2); // 28 - (pos % 8) * 4
-        repr[repr_idx * num_boards + board_idx] &= (-1U ^ (15 << bit_index));
-    }
-
 public:
-    uint32_t* repr; // Flat SoA layout: repr[field * num_boards + board_idx] for 18 data fields + 1 id field
+    uint32_t num_boards;
+    uint32_t* repr; // Device pointer
 
-    __device__ __host__ uint32_t get_num_boards() const { return num_boards; }
-
-    // Constructor: allocate unified memory
-    SudokuBoards(uint32_t n) : num_boards(n) {
+    SudokuBoards(uint32_t n) : num_boards(n), repr(nullptr) {
         size_t bytes = 19ULL * n * sizeof(uint32_t);
-
-        cudaError_t err = cudaMallocManaged(&repr, bytes);
+        cudaError_t err = cudaMalloc(&repr, bytes);
         if (err != cudaSuccess) {
-            fprintf(stderr, "cudaMallocManaged failed: %s\n", cudaGetErrorString(err));
+            fprintf(stderr, "cudaMalloc failed: %s\n", cudaGetErrorString(err));
             exit(1);
         }
-
-        cudaMemset(repr, 0, bytes);
+        // No memset here; data will be copied or generated
     }
 
-    // Delete copy constructor and assignment (managed memory doesn't like shallow copies)
+    // Delete copy constructor and assignment
     SudokuBoards(const SudokuBoards&) = delete;
     SudokuBoards& operator=(const SudokuBoards&) = delete;
 
-    // Allow move semantics if needed (optional)
+    // Allow move semantics if needed
     SudokuBoards(SudokuBoards&& other) noexcept : num_boards(other.num_boards), repr(other.repr) {
         other.repr = nullptr;
         other.num_boards = 0;
@@ -99,62 +62,92 @@ public:
         }
     }
 
-    __device__ __host__ uint32_t get_id(uint32_t board_idx) const {
-        return repr[18 * num_boards + board_idx];
-    }
-
-    __device__ __host__ void set(uint32_t board_idx, uint8_t pos, uint8_t number) {
-        set_index(board_idx, 9 * (pos / 9) + number);
-        set_index(board_idx, 81 + 9 * (pos % 9) + number);
-        set_index(board_idx, 162 + 9 * (((pos % 9) / 3) * 3 + (pos / 27)) + number);
-        set_number_at_pos(board_idx, pos, number + 1);
-    }
-
-    __device__ __host__ bool is_set(uint32_t board_idx, uint8_t pos) {
-        uint8_t repr_idx = 17 - (pos >> 3); // end - (pos / 8)
-        uint8_t bit_index = 28 - ((pos & 7) << 2); // 28 - (pos % 8) * 4
-        return (repr[repr_idx * num_boards + board_idx] & (15 << bit_index)) > 0;
-    }
-
-    __device__ __host__ void unset(uint32_t board_idx, uint8_t pos, uint8_t number) {
-        unset_index(board_idx, 9 * (pos / 9) + number);
-        unset_index(board_idx, 81 + 9 * (pos % 9) + number);
-        unset_index(board_idx, 162 + 9 * (((pos % 9) / 3) * 3 + (pos / 27)) + number);
-        unset_number_at_pos(board_idx, pos);
-    }
-
-    __device__ __host__ bool is_blocked(uint32_t board_idx, uint8_t pos, uint8_t number) {
-        return get_index(board_idx, 9 * (pos / 9) + number) ||
-            get_index(board_idx, 81 + 9 * (pos % 9) + number) ||
-            get_index(board_idx, 162 + 9 * (((pos % 9) / 3) * 3 + (pos / 27)) + number);
-        // is_set() called before
-    }
-
-    __device__ __host__ uint8_t get_number_at_pos(uint32_t board_idx, uint8_t pos) {
-        uint8_t repr_idx = 17 - (pos >> 3); // end - (pos / 8)
-        uint8_t bit_index = 28 - ((pos & 7) << 2); // 28 - (pos % 8) * 4
-        return (repr[repr_idx * num_boards + board_idx] >> bit_index) & 15;
-    }
+    uint32_t get_num_boards() const { return num_boards; }
 };
 
+__host__ __device__ inline void set_index(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint16_t index) {
+    uint8_t repr_idx = index >> 5; // index / 32
+    uint8_t bit_index = index & 31; // index % 32
+    repr[repr_idx * num_boards + board_idx] |= (1U << bit_index);
+}
+
+__host__ __device__ inline void unset_index(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint16_t index) {
+    uint8_t repr_idx = index >> 5; // index / 32
+    uint8_t bit_index = index & 31; // index % 32
+    repr[repr_idx * num_boards + board_idx] &= ~(1U << bit_index);
+}
+
+__host__ __device__ inline bool get_index(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint16_t index) {
+    uint8_t repr_idx = index >> 5; // index / 32
+    uint8_t bit_index = index & 31; // index % 32
+    return ((repr[repr_idx * num_boards + board_idx] & (1U << bit_index)) > 0);
+}
+
+__host__ __device__ inline void set_number_at_pos(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint8_t pos, uint8_t number) {
+    uint8_t repr_idx = 17 - (pos >> 3); // end - (pos / 8)
+    uint8_t bit_index = 28 - ((pos & 7) << 2); // 28 - (pos % 8) * 4
+    repr[repr_idx * num_boards + board_idx] |= (number << bit_index);
+}
+
+__host__ __device__ inline void unset_number_at_pos(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint8_t pos) {
+    uint8_t repr_idx = 17 - (pos >> 3); // end - (pos / 8)
+    uint8_t bit_index = 28 - ((pos & 7) << 2); // 28 - (pos % 8) * 4
+    repr[repr_idx * num_boards + board_idx] &= (-1U ^ (15 << bit_index));
+}
+
+__host__ __device__ inline bool is_set(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint8_t pos) {
+    uint8_t repr_idx = 17 - (pos >> 3); // end - (pos / 8)
+    uint8_t bit_index = 28 - ((pos & 7) << 2); // 28 - (pos % 8) * 4
+    return (repr[repr_idx * num_boards + board_idx] & (15 << bit_index)) > 0;
+}
+
+__host__ __device__ inline uint8_t get_number_at_pos(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint8_t pos) {
+    uint8_t repr_idx = 17 - (pos >> 3); // end - (pos / 8)
+    uint8_t bit_index = 28 - ((pos & 7) << 2); // 28 - (pos % 8) * 4
+    return (repr[repr_idx * num_boards + board_idx] >> bit_index) & 15;
+}
+
+__host__ __device__ inline bool is_blocked(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint8_t pos, uint8_t number) {
+    return get_index(repr, num_boards, board_idx, 9 * (pos / 9) + number) ||
+        get_index(repr, num_boards, board_idx, 81 + 9 * (pos % 9) + number) ||
+        get_index(repr, num_boards, board_idx, 162 + 9 * (((pos % 9) / 3) * 3 + (pos / 27)) + number);
+}
+
+__host__ __device__ inline void set(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint8_t pos, uint8_t number) {
+    set_index(repr, num_boards, board_idx, 9 * (pos / 9) + number);
+    set_index(repr, num_boards, board_idx, 81 + 9 * (pos % 9) + number);
+    set_index(repr, num_boards, board_idx, 162 + 9 * (((pos % 9) / 3) * 3 + (pos / 27)) + number);
+    set_number_at_pos(repr, num_boards, board_idx, pos, number + 1);
+}
+
+__host__ __device__ inline void unset(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint8_t pos, uint8_t number) {
+    unset_index(repr, num_boards, board_idx, 9 * (pos / 9) + number);
+    unset_index(repr, num_boards, board_idx, 81 + 9 * (pos % 9) + number);
+    unset_index(repr, num_boards, board_idx, 162 + 9 * (((pos % 9) / 3) * 3 + (pos / 27)) + number);
+    unset_number_at_pos(repr, num_boards, board_idx, pos);
+}
+
+__host__ __device__ inline uint32_t get_id(uint32_t* repr, uint32_t num_boards, uint32_t board_idx) {
+    return repr[18 * num_boards + board_idx];
+}
 
 const int MAX_LEVELS = 81;
 
 // Kernel 1: Find Next Cell (MRV), return next_pos and number of boards to be generated
-__global__ void find_next_cell_kernel(SudokuBoards& boards, uint8_t* next_pos, uint32_t* num_children_out) {
+__global__ void find_next_cell_kernel(uint32_t* d_repr, uint32_t num_boards, uint8_t* d_next_pos, uint32_t* d_num_children_out) {
     uint32_t board_idx = threadIdx.x + blockIdx.x * blockDim.x;
-    if (board_idx >= boards.get_num_boards()) return;
+    if (board_idx >= num_boards) return;
 
     int min_poss = 10;
     uint8_t best_pos = 0;
     bool is_solved = true;
 
     for (uint8_t pos = 0; pos < 81; ++pos) {
-        if (!boards.is_set(board_idx, pos)) {
+        if (!is_set(d_repr, num_boards, board_idx, pos)) {
             is_solved = false;
             int count = 0;
             for (uint8_t num = 0; num < 9; ++num) {
-                if (!boards.is_blocked(board_idx, pos, num)) {
+                if (!is_blocked(d_repr, num_boards, board_idx, pos, num)) {
                     ++count;
                 }
             }
@@ -167,37 +160,36 @@ __global__ void find_next_cell_kernel(SudokuBoards& boards, uint8_t* next_pos, u
 
     uint32_t num_children;
     if (is_solved) {
-        next_pos[board_idx] = 200;
+        d_next_pos[board_idx] = 200;
         num_children = 1;
     }
     else if (min_poss == 0) {
-        next_pos[board_idx] = 255;
+        d_next_pos[board_idx] = 255;
         num_children = 0;
     }
     else {
-        next_pos[board_idx] = best_pos;
+        d_next_pos[board_idx] = best_pos;
         num_children = min_poss;
     }
 
-    num_children_out[board_idx] = num_children;
+    d_num_children_out[board_idx] = num_children;
 }
 
 // Kernel 2: Generate Children
-__global__ void generate_children_kernel(SudokuBoards& in_boards, uint8_t* next_pos, uint32_t* prefixes, SudokuBoards& out_boards) {
+__global__ void generate_children_kernel(uint32_t* d_in_repr, uint32_t in_num_boards, uint8_t* d_next_pos, uint32_t* d_prefixes, uint32_t* d_out_repr, uint32_t out_num_boards) {
     uint32_t board_idx = threadIdx.x + blockIdx.x * blockDim.x;
-    if (board_idx >= in_boards.get_num_boards()) return;
+    if (board_idx >= in_num_boards) return;
 
-    uint8_t pos = next_pos[board_idx];
+    uint8_t pos = d_next_pos[board_idx];
     if (pos == 255) return; // impossible, no children
 
-    uint32_t out_start = prefixes[board_idx];
+    uint32_t out_start = d_prefixes[board_idx];
 
     if (pos == 200) {
         // solved, copy as is
         uint32_t out_idx = out_start;
         for (uint8_t field = 0; field < 19; ++field) {
-            out_boards.repr[field * out_boards.get_num_boards() + out_idx] =
-                in_boards.repr[field * in_boards.get_num_boards() + board_idx];
+            d_out_repr[field * out_num_boards + out_idx] = d_in_repr[field * in_num_boards + board_idx];
         }
         return;
     }
@@ -205,14 +197,13 @@ __global__ void generate_children_kernel(SudokuBoards& in_boards, uint8_t* next_
     // generate children
     uint32_t out_idx = out_start;
     for (uint8_t num = 0; num < 9; ++num) {
-        if (!in_boards.is_blocked(board_idx, pos, num)) {
+        if (!is_blocked(d_in_repr, in_num_boards, board_idx, pos, num)) {
             // copy board
             for (uint8_t field = 0; field < 19; ++field) {
-                out_boards.repr[field * out_boards.get_num_boards() + out_idx] =
-                    in_boards.repr[field * in_boards.get_num_boards() + board_idx];
+                d_out_repr[field * out_num_boards + out_idx] = d_in_repr[field * in_num_boards + board_idx];
             }
             // set the new value
-            out_boards.set(out_idx, pos, num);
+            set(d_out_repr, out_num_boards, out_idx, pos, num);
             ++out_idx;
         }
     }
@@ -220,6 +211,13 @@ __global__ void generate_children_kernel(SudokuBoards& in_boards, uint8_t* next_
 
 // Main function
 std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards* current) {
+    cudaStream_t stream;
+    cudaError_t err = cudaStreamCreate(&stream);
+    if (err != cudaSuccess) {
+        fprintf(stderr, "cudaStreamCreate failed: %s\n", cudaGetErrorString(err));
+        exit(1);
+    }
+
     uint32_t original_num = current->get_num_boards();
 
     for (int level = 0; level < MAX_LEVELS; ++level) {
@@ -227,78 +225,77 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards* current
         std::cout << "Level " << level << ", Boards: " << num_boards << std::endl;
         if (num_boards == 0) break;
 
-        uint8_t* next_pos;
-        cudaError_t err = cudaMallocManaged(&next_pos, num_boards * sizeof(uint8_t));
+        uint8_t* d_next_pos = nullptr;
+        err = cudaMalloc(&d_next_pos, num_boards * sizeof(uint8_t));
         if (err != cudaSuccess) { /* Handle error */ }
 
-        uint32_t* num_children_out;
-        err = cudaMallocManaged(&num_children_out, num_boards * sizeof(uint32_t));
+        uint32_t* d_num_children_out = nullptr;
+        err = cudaMalloc(&d_num_children_out, num_boards * sizeof(uint32_t));
         if (err != cudaSuccess) { /* Handle error */ }
 
         int threads = 256;
         int blocks = (num_boards + threads - 1) / threads;
-        find_next_cell_kernel <<<blocks, threads>>> (*current, next_pos, num_children_out);
-        cudaDeviceSynchronize();
+        find_next_cell_kernel << <blocks, threads, 0, stream >> > (current->repr, num_boards, d_next_pos, d_num_children_out);
+        cudaStreamSynchronize(stream);
 
-        cudaMemPrefetchAsync(num_children_out, num_boards * sizeof(uint32_t), cudaCpuDeviceId);
-        cudaDeviceSynchronize();
+        uint32_t* h_num_children_out = (uint32_t*)malloc(num_boards * sizeof(uint32_t));
+        cudaMemcpyAsync(h_num_children_out, d_num_children_out, num_boards * sizeof(uint32_t), cudaMemcpyDeviceToHost, stream);
+        cudaStreamSynchronize(stream);
 
         uint32_t new_num = 0;
         for (uint32_t i = 0; i < num_boards; ++i) {
-            new_num += num_children_out[i];
+            new_num += h_num_children_out[i];
         }
+        free(h_num_children_out);
 
         if (new_num == 0) {
-            cudaFree(next_pos);
-            cudaFree(num_children_out);
+            cudaFree(d_next_pos);
+            cudaFree(d_num_children_out);
             break;
         }
 
-        uint32_t* prefixes;
-        err = cudaMallocManaged(&prefixes, num_boards * sizeof(uint32_t));
+        uint32_t* d_prefixes = nullptr;
+        err = cudaMalloc(&d_prefixes, num_boards * sizeof(uint32_t));
         if (err != cudaSuccess) { /* Handle error */ }
 
-        thrust::exclusive_scan(thrust::device,
-            thrust::device_ptr<uint32_t>(num_children_out),
-            thrust::device_ptr<uint32_t>(num_children_out + num_boards),
-            thrust::device_ptr<uint32_t>(prefixes));
+        thrust::exclusive_scan(thrust::cuda::par.on(stream),
+            thrust::device_ptr<uint32_t>(d_num_children_out),
+            thrust::device_ptr<uint32_t>(d_num_children_out + num_boards),
+            thrust::device_ptr<uint32_t>(d_prefixes));
 
-        SudokuBoards* out_ptr = nullptr;
-        err = cudaMallocManaged(&out_ptr, sizeof(SudokuBoards));
-        if (err != cudaSuccess) { /* Handle error */ }
-        new (out_ptr) SudokuBoards(new_num);
+        SudokuBoards* out_ptr = new SudokuBoards(new_num);
 
-        generate_children_kernel <<<blocks, threads>>> (*current, next_pos, prefixes, *out_ptr);
-        cudaDeviceSynchronize();
+        generate_children_kernel << <blocks, threads, 0, stream >> > (current->repr, num_boards, d_next_pos, d_prefixes, out_ptr->repr, new_num);
+        cudaStreamSynchronize(stream);
 
-        cudaFree(next_pos);
-        cudaFree(num_children_out);
-        cudaFree(prefixes);
+        cudaFree(d_next_pos);
+        cudaFree(d_num_children_out);
+        cudaFree(d_prefixes);
 
         // Clean up old current
-        current->~SudokuBoards();
-        cudaFree(current);
+        delete current;
 
         // Move to new
         current = out_ptr;
     }
 
-    cudaDeviceSynchronize();
-
-    cudaMemPrefetchAsync(current->repr, 19ULL * current->get_num_boards() * sizeof(uint32_t), cudaCpuDeviceId);
-    cudaDeviceSynchronize();
+    uint32_t final_num_boards = current->get_num_boards();
+    size_t bytes = 19ULL * final_num_boards * sizeof(uint32_t);
+    uint32_t* h_repr = (uint32_t*)malloc(bytes);
+    cudaMemcpyAsync(h_repr, current->repr, bytes, cudaMemcpyDeviceToHost, stream);
+    cudaStreamSynchronize(stream);
 
     std::vector<std::array<uint8_t, 81>> solutions(original_num);
     std::vector<bool> found(original_num, false);
 
-    for (uint32_t board_idx = 0; board_idx < current->get_num_boards(); ++board_idx) {
-        uint32_t id = current->get_id(board_idx);
+    for (uint32_t board_idx = 0; board_idx < final_num_boards; ++board_idx) {
+        uint32_t id = get_id(h_repr, final_num_boards, board_idx);
         if (id >= original_num || found[id]) continue;
 
         auto& sol = solutions[id];
         bool valid = true;
         for (uint8_t pos = 0; pos < 81; ++pos) {
-            uint8_t num = current->get_number_at_pos(board_idx, pos) - 1;  // Adjust if needed, since stored as +1
+            uint8_t num = get_number_at_pos(h_repr, final_num_boards, board_idx, pos) - 1;
             if (num + 1 == 0) {  // Check for unset (0)
                 valid = false;
                 break;
@@ -310,9 +307,11 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards* current
         }
     }
 
+    free(h_repr);
+
     // Final cleanup
-    current->~SudokuBoards();
-    cudaFree(current);
+    delete current;
+    cudaStreamDestroy(stream);
 
     return solutions;
 }
@@ -324,13 +323,20 @@ void solveGPU(const std::string& input_file, const std::string& output_file, int
         return;
     }
 
+    cudaStream_t stream;
+    cudaError_t err = cudaStreamCreate(&stream);
+    if (err != cudaSuccess) {
+        fprintf(stderr, "cudaStreamCreate failed: %s\n", cudaGetErrorString(err));
+        exit(1);
+    }
+
     std::string line;
-    std::vector<SudokuBoards> temp_boards;
+    std::vector<std::vector<uint32_t>> temp_reprs;
     int id = 0;
     while (std::getline(file, line) && id < count) {
         if (line.length() != 81) continue;
 
-        SudokuBoards temp(1);
+        std::vector<uint32_t> h_single_repr(19, 0);
         bool valid = true;
         for (uint8_t pos = 0; pos < 81; ++pos) {
             char c = line[pos];
@@ -340,37 +346,43 @@ void solveGPU(const std::string& input_file, const std::string& output_file, int
             }
             if (c != '0') {
                 uint8_t number = c - '0' - 1;
-                if (temp.is_blocked(0, pos, number)) {
+                if (is_blocked(h_single_repr.data(), 1, 0, pos, number)) {
                     valid = false;
                     break;
                 }
-                temp.set(0, pos, number);
+                set(h_single_repr.data(), 1, 0, pos, number);
             }
         }
         if (valid) {
-            temp_boards.push_back(std::move(temp));
+            temp_reprs.push_back(std::move(h_single_repr));
             ++id;
         }
     }
     file.close();
 
-    uint32_t num_boards = temp_boards.size();
-    if (num_boards == 0) return;
+    uint32_t num_boards = temp_reprs.size();
+    if (num_boards == 0) {
+        cudaStreamDestroy(stream);
+        return;
+    }
+
+    uint32_t* h_repr = new uint32_t[19ULL * num_boards]();
+    for (uint32_t b = 0; b < num_boards; ++b) {
+        for (uint8_t f = 0; f < 18; ++f) {
+            h_repr[f * num_boards + b] = temp_reprs[b][f];
+        }
+        h_repr[18 * num_boards + b] = b;
+    }
+    temp_reprs.clear();
 
     // Start timing after reading
     auto start = std::chrono::high_resolution_clock::now();
 
-    SudokuBoards* inputs_ptr = nullptr;
-    cudaError_t err = cudaMallocManaged(&inputs_ptr, sizeof(SudokuBoards));
-    if (err != cudaSuccess) { /* Handle error, e.g., fprintf(stderr, "Failed to allocate managed memory for inputs: %s\n", cudaGetErrorString(err)); exit(1); */ }
-    new (inputs_ptr) SudokuBoards(num_boards);
-
-    for (uint32_t b = 0; b < num_boards; ++b) {
-        for (uint8_t f = 0; f < 18; ++f) {
-            inputs_ptr->repr[f * num_boards + b] = temp_boards[b].repr[f];
-        }
-        inputs_ptr->repr[18 * num_boards + b] = b;
-    }
+    SudokuBoards* inputs_ptr = new SudokuBoards(num_boards);
+    size_t bytes = 19ULL * num_boards * sizeof(uint32_t);
+    cudaMemcpyAsync(inputs_ptr->repr, h_repr, bytes, cudaMemcpyHostToDevice, stream);
+    cudaStreamSynchronize(stream);
+    delete[] h_repr;
 
     std::vector<std::array<uint8_t, 81>> solutions = solve_multiple_sudoku(inputs_ptr);
 
@@ -379,7 +391,7 @@ void solveGPU(const std::string& input_file, const std::string& output_file, int
     std::chrono::duration<double> duration = end - start;
     std::cout << "Time taken: " << duration.count() << " seconds" << std::endl;
 
-    // Clean up inputs_ptr after the call (solve_multiple_sudoku will have freed it internally, but confirm in the modified function)
+    cudaStreamDestroy(stream);
 
     std::ofstream out(output_file);
     if (!out.is_open()) {
