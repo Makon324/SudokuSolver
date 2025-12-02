@@ -15,6 +15,7 @@
 #include <thrust/execution_policy.h>
 #include <thrust/device_ptr.h>
 #include <thrust/scan.h>
+#include <thrust/reduce.h>  // Added for reduce
 #include <thrust/system/cuda/execution_policy.h>
 
 class SudokuBoards
@@ -238,15 +239,11 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards* current
         find_next_cell_kernel << <blocks, threads, 0, stream >> > (current->repr, num_boards, d_next_pos, d_num_children_out);
         cudaStreamSynchronize(stream);
 
-        uint32_t* h_num_children_out = (uint32_t*)malloc(num_boards * sizeof(uint32_t));
-        cudaMemcpyAsync(h_num_children_out, d_num_children_out, num_boards * sizeof(uint32_t), cudaMemcpyDeviceToHost, stream);
-        cudaStreamSynchronize(stream);
-
-        uint32_t new_num = 0;
-        for (uint32_t i = 0; i < num_boards; ++i) {
-            new_num += h_num_children_out[i];
-        }
-        free(h_num_children_out);
+        // Compute new_num using Thrust reduce on device
+        uint32_t new_num = thrust::reduce(thrust::cuda::par.on(stream),
+            thrust::device_ptr<uint32_t>(d_num_children_out),
+            thrust::device_ptr<uint32_t>(d_num_children_out + num_boards),
+            0u);
 
         if (new_num == 0) {
             cudaFree(d_next_pos);
