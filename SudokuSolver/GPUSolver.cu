@@ -17,6 +17,32 @@
 #include <thrust/count.h>
 #include <thrust/system/cuda/execution_policy.h>
 
+// Constants for Sudoku dimensions and representation
+constexpr int GRID_SIZE = 9;
+constexpr int BOARD_SIZE = GRID_SIZE * GRID_SIZE; // 81
+constexpr int SUBGRID_SIZE = 3;
+constexpr int BITS_PER_GROUP = GRID_SIZE; // 9 bits for numbers 1-9
+constexpr uint32_t MASK_GROUP = (1U << BITS_PER_GROUP) - 1; // 0x1FF
+constexpr int ROW_MASK_BASE = 0;
+constexpr int COL_MASK_BASE = BOARD_SIZE; // 81
+constexpr int BOX_MASK_BASE = 2 * BOARD_SIZE; // 162
+constexpr int BITS_PER_CELL = 4;
+constexpr uint32_t MASK_CELL = (1U << BITS_PER_CELL) - 1; // 15
+constexpr int CELLS_PER_FIELD = 32 / BITS_PER_CELL; // 8
+constexpr int FIELDS_PER_GROUP = 6;
+constexpr int ROW_FIELDS_START = 0;
+constexpr int COL_FIELDS_START = ROW_FIELDS_START + FIELDS_PER_GROUP; // 6
+constexpr int BOX_FIELDS_START = COL_FIELDS_START + FIELDS_PER_GROUP; // 12
+constexpr int DATA_FIELDS_COUNT = FIELDS_PER_GROUP * 3; // 18
+constexpr int LAST_DATA_FIELD = BOX_FIELDS_START + FIELDS_PER_GROUP - 1; // 17
+constexpr int ID_FIELD = DATA_FIELDS_COUNT; // 18
+constexpr int FIELDS_PER_BOARD = DATA_FIELDS_COUNT + 1; // 19
+constexpr uint8_t SOLVED_CODE = 200;
+constexpr uint8_t IMPOSSIBLE_CODE = 255;
+constexpr int MAX_SOLVE_LEVELS = BOARD_SIZE;
+constexpr int THREADS_PER_BLOCK = 256;
+const uint32_t MAX_PREALLOC_BOARDS = 1 << 20; // 1048576
+
 /**
  * Checks for CUDA errors and prints an error message if one occurred.
  * Exits the program if an error is detected.
@@ -30,8 +56,8 @@ void checkCudaError(cudaError_t err, const char* msg) {
 
 /**
  * Class to manage representations of multiple Sudoku boards on GPU device memory.
- * Each board is compactly represented using 19 uint32_t values:
- * - Indices 0-5: Bitmasks for rows (9 bits per row, but packed into uint32_t).
+ * Each board is compactly represented using FIELDS_PER_BOARD uint32_t values:
+ * - Indices 0-5: Bitmasks for rows (BITS_PER_GROUP bits per row, but packed into uint32_t).
  * - Indices 6-11: Bitmasks for columns.
  * - Indices 12-17: Bitmasks for boxes.
  * - Index 18: Board ID for tracking original puzzles.
@@ -46,7 +72,7 @@ public:
      * Constructor: Allocates device memory for the specified number of boards.
      */
     SudokuBoards(uint32_t n) : num_boards(n), repr(nullptr) {
-        size_t bytes = 19ULL * n * sizeof(uint32_t);
+        size_t bytes = static_cast<size_t>(FIELDS_PER_BOARD) * n * sizeof(uint32_t);
         cudaError_t err = cudaMalloc(&repr, bytes);
         checkCudaError(err, "cudaMalloc failed in SudokuBoards constructor");
         // No memset here; data will be copied or generated
@@ -117,73 +143,73 @@ __host__ __device__ inline bool get_index(uint32_t* repr, uint32_t num_boards, u
 
 // Sets a number (1-9 stored as 1-9) at a specific position in the board
 __host__ __device__ inline void set_number_at_pos(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint8_t pos, uint8_t number) {
-    uint8_t repr_idx = 17 - (pos >> 3); // end - (pos / 8)
-    uint8_t bit_index = 28 - ((pos & 7) << 2); // 28 - (pos % 8) * 4
+    uint8_t repr_idx = LAST_DATA_FIELD - (pos >> 3); // LAST_DATA_FIELD - (pos / 8)
+    uint8_t bit_index = (32 - BITS_PER_CELL) - ((pos & (CELLS_PER_FIELD - 1)) << 2); // (32 - 4) - ((pos % 8) * 4)
     repr[repr_idx * num_boards + board_idx] |= (number << bit_index);
 }
 
 // Unsets the number at a specific position
 __host__ __device__ inline void unset_number_at_pos(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint8_t pos) {
-    uint8_t repr_idx = 17 - (pos >> 3); // end - (pos / 8)
-    uint8_t bit_index = 28 - ((pos & 7) << 2); // 28 - (pos % 8) * 4
-    repr[repr_idx * num_boards + board_idx] &= (-1U ^ (15 << bit_index));
+    uint8_t repr_idx = LAST_DATA_FIELD - (pos >> 3); // LAST_DATA_FIELD - (pos / 8)
+    uint8_t bit_index = (32 - BITS_PER_CELL) - ((pos & (CELLS_PER_FIELD - 1)) << 2); // (32 - 4) - ((pos % 8) * 4)
+    repr[repr_idx * num_boards + board_idx] &= (-1U ^ (MASK_CELL << bit_index));
 }
 
 // Checks if a position has a set number
 __host__ __device__ inline bool is_set(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint8_t pos) {
-    uint8_t repr_idx = 17 - (pos >> 3); // end - (pos / 8)
-    uint8_t bit_index = 28 - ((pos & 7) << 2); // 28 - (pos % 8) * 4
-    return (repr[repr_idx * num_boards + board_idx] & (15 << bit_index)) > 0;
+    uint8_t repr_idx = LAST_DATA_FIELD - (pos >> 3); // LAST_DATA_FIELD - (pos / 8)
+    uint8_t bit_index = (32 - BITS_PER_CELL) - ((pos & (CELLS_PER_FIELD - 1)) << 2); // (32 - 4) - ((pos % 8) * 4)
+    return (repr[repr_idx * num_boards + board_idx] & (MASK_CELL << bit_index)) > 0;
 }
 
 // Retrieves the number (1-9) at a specific position
 __host__ __device__ inline uint8_t get_number_at_pos(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint8_t pos) {
-    uint8_t repr_idx = 17 - (pos >> 3); // end - (pos / 8)
-    uint8_t bit_index = 28 - ((pos & 7) << 2); // 28 - (pos % 8) * 4
-    return (repr[repr_idx * num_boards + board_idx] >> bit_index) & 15;
+    uint8_t repr_idx = LAST_DATA_FIELD - (pos >> 3); // LAST_DATA_FIELD - (pos / 8)
+    uint8_t bit_index = (32 - BITS_PER_CELL) - ((pos & (CELLS_PER_FIELD - 1)) << 2); // (32 - 4) - ((pos % 8) * 4)
+    return (repr[repr_idx * num_boards + board_idx] >> bit_index) & MASK_CELL;
 }
 
 // Checks if placing a number at a position is blocked by row, column, or box constraints
 __host__ __device__ inline bool is_blocked(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint8_t pos, uint8_t number) {
-    return get_index(repr, num_boards, board_idx, 9 * (pos / 9) + number) ||
-        get_index(repr, num_boards, board_idx, 81 + 9 * (pos % 9) + number) ||
-        get_index(repr, num_boards, board_idx, 162 + 9 * (((pos % 9) / 3) * 3 + (pos / 27)) + number);
+    return get_index(repr, num_boards, board_idx, ROW_MASK_BASE + GRID_SIZE * (pos / GRID_SIZE) + number) ||
+        get_index(repr, num_boards, board_idx, COL_MASK_BASE + GRID_SIZE * (pos % GRID_SIZE) + number) ||
+        get_index(repr, num_boards, board_idx, BOX_MASK_BASE + GRID_SIZE * (((pos % GRID_SIZE) / SUBGRID_SIZE) * SUBGRID_SIZE + (pos / (GRID_SIZE * SUBGRID_SIZE))) + number);
 }
 
 // Sets a number at a position and updates the row, column, and box bitmasks
 __host__ __device__ inline void set(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint8_t pos, uint8_t number) {
-    set_index(repr, num_boards, board_idx, 9 * (pos / 9) + number);
-    set_index(repr, num_boards, board_idx, 81 + 9 * (pos % 9) + number);
-    set_index(repr, num_boards, board_idx, 162 + 9 * (((pos % 9) / 3) * 3 + (pos / 27)) + number);
+    set_index(repr, num_boards, board_idx, ROW_MASK_BASE + GRID_SIZE * (pos / GRID_SIZE) + number);
+    set_index(repr, num_boards, board_idx, COL_MASK_BASE + GRID_SIZE * (pos % GRID_SIZE) + number);
+    set_index(repr, num_boards, board_idx, BOX_MASK_BASE + GRID_SIZE * (((pos % GRID_SIZE) / SUBGRID_SIZE) * SUBGRID_SIZE + (pos / (GRID_SIZE * SUBGRID_SIZE))) + number);
     set_number_at_pos(repr, num_boards, board_idx, pos, number + 1);
 }
 
 // Unsets a number at a position and clears the corresponding bitmasks
 __host__ __device__ inline void unset(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint8_t pos, uint8_t number) {
-    unset_index(repr, num_boards, board_idx, 9 * (pos / 9) + number);
-    unset_index(repr, num_boards, board_idx, 81 + 9 * (pos % 9) + number);
-    unset_index(repr, num_boards, board_idx, 162 + 9 * (((pos % 9) / 3) * 3 + (pos / 27)) + number);
+    unset_index(repr, num_boards, board_idx, ROW_MASK_BASE + GRID_SIZE * (pos / GRID_SIZE) + number);
+    unset_index(repr, num_boards, board_idx, COL_MASK_BASE + GRID_SIZE * (pos % GRID_SIZE) + number);
+    unset_index(repr, num_boards, board_idx, BOX_MASK_BASE + GRID_SIZE * (((pos % GRID_SIZE) / SUBGRID_SIZE) * SUBGRID_SIZE + (pos / (GRID_SIZE * SUBGRID_SIZE))) + number);
     unset_number_at_pos(repr, num_boards, board_idx, pos);
 }
 
 // Retrieves the original board ID stored in the representation
 __host__ __device__ inline uint32_t get_id(uint32_t* repr, uint32_t num_boards, uint32_t board_idx) {
-    return repr[18 * num_boards + board_idx];
+    return repr[ID_FIELD * num_boards + board_idx];
 }
 
-// Retrieves a 9-bit mask from the bitmask array, handling straddling across uint32_t boundaries
+// Retrieves a BITS_PER_GROUP-bit mask from the bitmask array, handling straddling across uint32_t boundaries
 __device__ uint32_t get_mask(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint16_t base_index) {
     uint8_t repr_idx = base_index >> 5;
     uint8_t bit_index = base_index & 31;
     uint32_t val1 = repr[repr_idx * num_boards + board_idx];
-    if (bit_index <= 23) {
-        return (val1 >> bit_index) & 0x1FF;
+    if (bit_index <= (32 - BITS_PER_GROUP)) {
+        return (val1 >> bit_index) & MASK_GROUP;
     }
     else {
         uint32_t val2 = repr[(repr_idx + 1) * num_boards + board_idx];
         uint32_t low = val1 >> bit_index;
         uint32_t high = val2 << (32 - bit_index);
-        return (low | high) & 0x1FF;
+        return (low | high) & MASK_GROUP;
     }
 }
 
@@ -194,16 +220,16 @@ __device__ uint32_t get_mask(uint32_t* repr, uint32_t num_boards, uint32_t board
  */
 __device__ void perform_propagation(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, bool* changed, bool* impossible) {
     *changed = false;
-    for (uint8_t pos = 0; pos < 81; ++pos) {
+    for (uint8_t pos = 0; pos < BOARD_SIZE; ++pos) {
         if (is_set(repr, num_boards, board_idx, pos)) continue;
-        uint16_t base_row = 9 * (pos / 9);
-        uint16_t base_col = 81 + 9 * (pos % 9);
-        uint16_t base_box = 162 + 9 * (((pos % 9) / 3) * 3 + (pos / 27));
+        uint16_t base_row = ROW_MASK_BASE + GRID_SIZE * (pos / GRID_SIZE);
+        uint16_t base_col = COL_MASK_BASE + GRID_SIZE * (pos % GRID_SIZE);
+        uint16_t base_box = BOX_MASK_BASE + GRID_SIZE * (((pos % GRID_SIZE) / SUBGRID_SIZE) * SUBGRID_SIZE + (pos / (GRID_SIZE * SUBGRID_SIZE)));
         uint32_t row_m = get_mask(repr, num_boards, board_idx, base_row);
         uint32_t col_m = get_mask(repr, num_boards, board_idx, base_col);
         uint32_t box_m = get_mask(repr, num_boards, board_idx, base_box);
         uint32_t used = row_m | col_m | box_m;
-        uint32_t avail = ~used & 0x1FF;
+        uint32_t avail = ~used & MASK_GROUP;
         int count = __popc(avail);
         if (count == 0) {
             *impossible = true;
@@ -223,20 +249,20 @@ __device__ void perform_propagation(uint32_t* repr, uint32_t num_boards, uint32_
  * Also detects if the board is fully solved.
  */
 __device__ uint8_t find_mrv_pos(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, int* min_poss, bool* is_solved) {
-    *min_poss = 10;
+    *min_poss = GRID_SIZE + 1;
     uint8_t best_pos = 0;
     *is_solved = true;
-    for (uint8_t pos = 0; pos < 81; ++pos) {
+    for (uint8_t pos = 0; pos < BOARD_SIZE; ++pos) {
         if (!is_set(repr, num_boards, board_idx, pos)) {
             *is_solved = false;
-            uint16_t base_row = 9 * (pos / 9);
-            uint16_t base_col = 81 + 9 * (pos % 9);
-            uint16_t base_box = 162 + 9 * (((pos % 9) / 3) * 3 + (pos / 27));
+            uint16_t base_row = ROW_MASK_BASE + GRID_SIZE * (pos / GRID_SIZE);
+            uint16_t base_col = COL_MASK_BASE + GRID_SIZE * (pos % GRID_SIZE);
+            uint16_t base_box = BOX_MASK_BASE + GRID_SIZE * (((pos % GRID_SIZE) / SUBGRID_SIZE) * SUBGRID_SIZE + (pos / (GRID_SIZE * SUBGRID_SIZE)));
             uint32_t row_m = get_mask(repr, num_boards, board_idx, base_row);
             uint32_t col_m = get_mask(repr, num_boards, board_idx, base_col);
             uint32_t box_m = get_mask(repr, num_boards, board_idx, base_box);
             uint32_t used = row_m | col_m | box_m;
-            uint32_t avail = ~used & 0x1FF;
+            uint32_t avail = ~used & MASK_GROUP;
             int count = __popc(avail);
             if (count < *min_poss) {
                 *min_poss = count;
@@ -250,7 +276,7 @@ __device__ uint8_t find_mrv_pos(uint32_t* repr, uint32_t num_boards, uint32_t bo
 /**
  * Kernel to find the next cell for each board using MRV heuristic.
  * Performs singles propagation until no changes or impossibility detected.
- * Outputs next position (or special codes: 255 for impossible, 200 for solved) and number of children.
+ * Outputs next position (or special codes: IMPOSSIBLE_CODE for impossible, SOLVED_CODE for solved) and number of children.
  */
 __global__ void find_next_cell_kernel(uint32_t* d_repr, uint32_t num_boards, uint8_t* d_next_pos, uint32_t* d_num_children_out) {
     uint32_t board_idx = threadIdx.x + blockIdx.x * blockDim.x;
@@ -264,7 +290,7 @@ __global__ void find_next_cell_kernel(uint32_t* d_repr, uint32_t num_boards, uin
     }
 
     if (impossible) {
-        d_next_pos[board_idx] = 255;
+        d_next_pos[board_idx] = IMPOSSIBLE_CODE;
         d_num_children_out[board_idx] = 0;
         return;
     }
@@ -276,7 +302,7 @@ __global__ void find_next_cell_kernel(uint32_t* d_repr, uint32_t num_boards, uin
 
     uint32_t num_children;
     if (is_solved) {
-        d_next_pos[board_idx] = 200;
+        d_next_pos[board_idx] = SOLVED_CODE;
         num_children = 1;
     }
     else {
@@ -292,14 +318,14 @@ __global__ void find_next_cell_kernel(uint32_t* d_repr, uint32_t num_boards, uin
  * Combines masks from row, column, and box to find unused numbers (1-9).
  */
 __device__ uint32_t get_available_mask(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint8_t pos) {
-    uint16_t base_row = 9 * (pos / 9);
-    uint16_t base_col = 81 + 9 * (pos % 9);
-    uint16_t base_box = 162 + 9 * (((pos % 9) / 3) * 3 + (pos / 27));
+    uint16_t base_row = ROW_MASK_BASE + GRID_SIZE * (pos / GRID_SIZE);
+    uint16_t base_col = COL_MASK_BASE + GRID_SIZE * (pos % GRID_SIZE);
+    uint16_t base_box = BOX_MASK_BASE + GRID_SIZE * (((pos % GRID_SIZE) / SUBGRID_SIZE) * SUBGRID_SIZE + (pos / (GRID_SIZE * SUBGRID_SIZE)));
     uint32_t row_m = get_mask(repr, num_boards, board_idx, base_row);
     uint32_t col_m = get_mask(repr, num_boards, board_idx, base_col);
     uint32_t box_m = get_mask(repr, num_boards, board_idx, base_box);
     uint32_t used = row_m | col_m | box_m;
-    return ~used & 0x1FF;
+    return ~used & MASK_GROUP;
 }
 
 /**
@@ -312,14 +338,14 @@ __global__ void generate_children_kernel(uint32_t* d_in_repr, uint32_t in_num_bo
     if (board_idx >= in_num_boards) return;
 
     uint8_t pos = d_next_pos[board_idx];
-    if (pos == 255) return; // impossible, no children
+    if (pos == IMPOSSIBLE_CODE) return; // impossible, no children
 
     uint32_t out_start = d_prefixes[board_idx];
 
-    if (pos == 200) {
+    if (pos == SOLVED_CODE) {
         // solved, copy as is
         uint32_t out_idx = out_start;
-        for (uint8_t field = 0; field < 19; ++field) {
+        for (uint8_t field = 0; field < FIELDS_PER_BOARD; ++field) {
             d_out_repr[field * out_num_boards + out_idx] = d_in_repr[field * in_num_boards + board_idx];
         }
         return;
@@ -331,7 +357,7 @@ __global__ void generate_children_kernel(uint32_t* d_in_repr, uint32_t in_num_bo
     while (avail != 0) {
         uint32_t bit = __ffs(avail) - 1;
         uint32_t out_idx = out_start + child_idx;
-        for (uint8_t field = 0; field < 19; ++field) {
+        for (uint8_t field = 0; field < FIELDS_PER_BOARD; ++field) {
             d_out_repr[field * out_num_boards + out_idx] = d_in_repr[field * in_num_boards + board_idx];
         }
         set(d_out_repr, out_num_boards, out_idx, pos, bit);
@@ -339,8 +365,6 @@ __global__ void generate_children_kernel(uint32_t* d_in_repr, uint32_t in_num_bo
         ++child_idx;
     }
 }
-
-const int MAX_LEVELS = 81;
 
 /**
  * Computes the total number of new boards (sum of children) using Thrust reduce.
@@ -359,7 +383,7 @@ uint32_t count_unsolved(uint8_t* d_next_pos, uint32_t num_boards, cudaStream_t s
     return thrust::count_if(thrust::cuda::par.on(stream),
         thrust::device_ptr<uint8_t>(d_next_pos),
         thrust::device_ptr<uint8_t>(d_next_pos + num_boards),
-        [] __device__(uint8_t pos) { return pos < 200; });
+        [] __device__(uint8_t pos) { return pos < SOLVED_CODE; });
 }
 
 /**
@@ -378,7 +402,7 @@ void compute_prefixes(uint32_t* d_num_children_out, uint32_t* d_prefixes, uint32
 void ensure_buffer_size(uint32_t** output_repr, uint32_t* output_max, uint32_t new_num) {
     if (new_num > *output_max) {
         checkCudaError(cudaFree(*output_repr), "cudaFree failed for output_repr (overflow)");
-        size_t new_bytes = 19ULL * new_num * sizeof(uint32_t);
+        size_t new_bytes = static_cast<size_t>(FIELDS_PER_BOARD) * new_num * sizeof(uint32_t);
         checkCudaError(cudaMalloc(output_repr, new_bytes), "cudaMalloc failed for output_repr (overflow)");
         *output_max = new_num;
     }
@@ -386,10 +410,10 @@ void ensure_buffer_size(uint32_t** output_repr, uint32_t* output_max, uint32_t n
 
 /**
  * Extracts solutions from the final host representations.
- * Maps back to original puzzle IDs and constructs 81-element arrays with numbers 1-9.
+ * Maps back to original puzzle IDs and constructs BOARD_SIZE-element arrays with numbers 1-9.
  */
-std::vector<std::array<uint8_t, 81>> extract_solutions(uint32_t* h_repr, uint32_t final_num_boards, uint32_t original_num) {
-    std::vector<std::array<uint8_t, 81>> solutions(original_num);
+std::vector<std::array<uint8_t, BOARD_SIZE>> extract_solutions(uint32_t* h_repr, uint32_t final_num_boards, uint32_t original_num) {
+    std::vector<std::array<uint8_t, BOARD_SIZE>> solutions(original_num);
     std::vector<bool> found(original_num, false);
 
     for (uint32_t board_idx = 0; board_idx < final_num_boards; ++board_idx) {
@@ -397,7 +421,7 @@ std::vector<std::array<uint8_t, 81>> extract_solutions(uint32_t* h_repr, uint32_
         if (id >= original_num || found[id]) continue;
 
         auto& sol = solutions[id];
-        for (uint8_t pos = 0; pos < 81; ++pos) {
+        for (uint8_t pos = 0; pos < BOARD_SIZE; ++pos) {
             uint8_t num = get_number_at_pos(h_repr, final_num_boards, board_idx, pos) - 1;
             sol[pos] = num + 1;
         }
@@ -410,17 +434,16 @@ std::vector<std::array<uint8_t, 81>> extract_solutions(uint32_t* h_repr, uint32_
 /**
  * Solves multiple Sudoku puzzles using GPU-accelerated backtracking.
  * Uses two buffers for input/output swapping across levels.
- * Returns the solutions as vectors of 81-element arrays.
+ * Returns the solutions as vectors of BOARD_SIZE-element arrays.
  */
-std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards* current) {
+std::vector<std::array<uint8_t, BOARD_SIZE>> solve_multiple_sudoku(SudokuBoards* current) {
     cudaStream_t stream;
     cudaError_t err = cudaStreamCreate(&stream);
     checkCudaError(err, "cudaStreamCreate failed in solve_multiple_sudoku");
 
     uint32_t original_num = current->get_num_boards();
 
-    const uint32_t MAX_PREALLOC_BOARDS = 1048576; // 1M boards, adjust based on expected max
-    size_t prealloc_bytes = 19ULL * MAX_PREALLOC_BOARDS * sizeof(uint32_t);
+    size_t prealloc_bytes = static_cast<size_t>(FIELDS_PER_BOARD) * MAX_PREALLOC_BOARDS * sizeof(uint32_t);
 
     uint32_t* repr_a = nullptr;
     checkCudaError(cudaMalloc(&repr_a, prealloc_bytes), "cudaMalloc failed for repr_a");
@@ -429,7 +452,7 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards* current
     checkCudaError(cudaMalloc(&repr_b, prealloc_bytes), "cudaMalloc failed for repr_b");
 
     // Assume original_num <= MAX_PREALLOC_BOARDS; if not, handle similarly by allocating larger
-    size_t initial_bytes = 19ULL * original_num * sizeof(uint32_t);
+    size_t initial_bytes = static_cast<size_t>(FIELDS_PER_BOARD) * original_num * sizeof(uint32_t);
     checkCudaError(cudaMemcpy(repr_a, current->repr, initial_bytes, cudaMemcpyDeviceToDevice), "cudaMemcpy failed for initial copy");
     delete current;
 
@@ -440,7 +463,7 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards* current
     uint32_t num_boards = original_num;
 
     // Process levels until all solved or no boards left
-    for (int level = 0; level < MAX_LEVELS; ++level) {
+    for (int level = 0; level < MAX_SOLVE_LEVELS; ++level) {
         std::cout << "Level " << level << ", Boards: " << num_boards << std::endl;
         if (num_boards == 0) break;
 
@@ -454,7 +477,7 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards* current
         checkCudaError(err, "cudaMalloc failed for d_num_children_out");
 
         // Launch kernel to find next cells
-        int threads = 256;
+        int threads = THREADS_PER_BLOCK;
         int blocks = (num_boards + threads - 1) / threads;
         find_next_cell_kernel << <blocks, threads, 0, stream >> > (input_repr, num_boards, d_next_pos, d_num_children_out);
         checkCudaError(cudaGetLastError(), "find_next_cell_kernel launch failed");
@@ -508,7 +531,7 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards* current
     }
 
     uint32_t final_num_boards = num_boards;
-    size_t bytes = 19ULL * final_num_boards * sizeof(uint32_t);
+    size_t bytes = static_cast<size_t>(FIELDS_PER_BOARD) * final_num_boards * sizeof(uint32_t);
     uint32_t* h_repr = (uint32_t*)malloc(bytes);
     if (h_repr == nullptr) {
         fprintf(stderr, "malloc failed for h_repr\n");
@@ -546,11 +569,11 @@ std::vector<std::vector<uint32_t>> read_puzzles(const std::string& input_file, i
     std::vector<std::vector<uint32_t>> temp_reprs;
     int id = 0;
     while (std::getline(file, line) && id < count) {
-        if (line.length() != 81) continue;
+        if (line.length() != BOARD_SIZE) continue;
 
-        std::vector<uint32_t> h_single_repr(19, 0);
+        std::vector<uint32_t> h_single_repr(FIELDS_PER_BOARD, 0);
         bool valid = true;
-        for (uint8_t pos = 0; pos < 81; ++pos) {
+        for (uint8_t pos = 0; pos < BOARD_SIZE; ++pos) {
             char c = line[pos];
             if (c < '0' || c > '9') {
                 valid = false;
@@ -579,16 +602,16 @@ std::vector<std::vector<uint32_t>> read_puzzles(const std::string& input_file, i
  */
 uint32_t* prepare_host_repr(const std::vector<std::vector<uint32_t>>& temp_reprs) {
     uint32_t num_boards = temp_reprs.size();
-    uint32_t* h_repr = new uint32_t[19ULL * num_boards]();
+    uint32_t* h_repr = new uint32_t[static_cast<size_t>(FIELDS_PER_BOARD) * num_boards]();
     if (h_repr == nullptr) {
         fprintf(stderr, "new failed for h_repr\n");
         exit(1);
     }
     for (uint32_t b = 0; b < num_boards; ++b) {
-        for (uint8_t f = 0; f < 18; ++f) {
+        for (uint8_t f = 0; f < DATA_FIELDS_COUNT; ++f) {
             h_repr[f * num_boards + b] = temp_reprs[b][f];
         }
-        h_repr[18 * num_boards + b] = b;
+        h_repr[ID_FIELD * num_boards + b] = b;
     }
     return h_repr;
 }
@@ -597,7 +620,7 @@ uint32_t* prepare_host_repr(const std::vector<std::vector<uint32_t>>& temp_reprs
  * Writes the solved puzzles to the output file.
  * Outputs "No solution" for unsolved puzzles.
  */
-void write_solutions(const std::string& output_file, const std::vector<std::array<uint8_t, 81>>& solutions) {
+void write_solutions(const std::string& output_file, const std::vector<std::array<uint8_t, BOARD_SIZE>>& solutions) {
     std::ofstream out(output_file);
     if (!out.is_open()) {
         std::cerr << "Failed to open output file: " << output_file << std::endl;
@@ -605,7 +628,7 @@ void write_solutions(const std::string& output_file, const std::vector<std::arra
     }
     for (const auto& solution : solutions) {
         bool is_valid_solution = true;
-        for (uint8_t pos = 0; pos < 81; ++pos) {
+        for (uint8_t pos = 0; pos < BOARD_SIZE; ++pos) {
             if (solution[pos] == 0) {
                 is_valid_solution = false;
                 break;
@@ -615,7 +638,7 @@ void write_solutions(const std::string& output_file, const std::vector<std::arra
             out << "No solution" << std::endl;
             continue;
         }
-        for (uint8_t pos = 0; pos < 81; ++pos) {
+        for (uint8_t pos = 0; pos < BOARD_SIZE; ++pos) {
             uint8_t num = solution[pos];
             out << static_cast<char>('0' + num);
         }
@@ -651,13 +674,13 @@ void solveGPU(const std::string& input_file, const std::string& output_file, int
 
     // Copy to device and solve
     SudokuBoards* inputs_ptr = new SudokuBoards(num_boards);
-    size_t bytes = 19ULL * num_boards * sizeof(uint32_t);
+    size_t bytes = static_cast<size_t>(FIELDS_PER_BOARD) * num_boards * sizeof(uint32_t);
     err = cudaMemcpyAsync(inputs_ptr->repr, h_repr, bytes, cudaMemcpyHostToDevice, stream);
     checkCudaError(err, "cudaMemcpyAsync failed for inputs_ptr");
     checkCudaError(cudaStreamSynchronize(stream), "cudaStreamSynchronize failed after cudaMemcpyAsync for inputs_ptr");
     delete[] h_repr;
 
-    std::vector<std::array<uint8_t, 81>> solutions = solve_multiple_sudoku(inputs_ptr);
+    std::vector<std::array<uint8_t, BOARD_SIZE>> solutions = solve_multiple_sudoku(inputs_ptr);
 
     // End timing before writing
     auto end = std::chrono::high_resolution_clock::now();
