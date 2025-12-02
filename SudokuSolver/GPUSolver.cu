@@ -19,6 +19,13 @@
 #include <thrust/count.h>
 #include <thrust/system/cuda/execution_policy.h>
 
+void checkCudaError(cudaError_t err, const char* msg) {
+    if (err != cudaSuccess) {
+        fprintf(stderr, "%s: %s\n", msg, cudaGetErrorString(err));
+        exit(1);
+    }
+}
+
 class SudokuBoards
 {
 public:
@@ -28,10 +35,7 @@ public:
     SudokuBoards(uint32_t n) : num_boards(n), repr(nullptr) {
         size_t bytes = 19ULL * n * sizeof(uint32_t);
         cudaError_t err = cudaMalloc(&repr, bytes);
-        if (err != cudaSuccess) {
-            fprintf(stderr, "cudaMalloc failed: %s\n", cudaGetErrorString(err));
-            exit(1);
-        }
+        checkCudaError(err, "cudaMalloc failed in SudokuBoards constructor");
         // No memset here; data will be copied or generated
     }
 
@@ -48,7 +52,7 @@ public:
     SudokuBoards& operator=(SudokuBoards&& other) noexcept {
         if (this != &other) {
             if (repr != nullptr) {
-                cudaFree(repr);
+                checkCudaError(cudaFree(repr), "cudaFree failed in SudokuBoards move assignment");
             }
             num_boards = other.num_boards;
             repr = other.repr;
@@ -60,7 +64,7 @@ public:
 
     ~SudokuBoards() {
         if (repr != nullptr) {
-            cudaFree(repr);
+            checkCudaError(cudaFree(repr), "cudaFree failed in SudokuBoards destructor");
         }
     }
 
@@ -278,10 +282,7 @@ __global__ void generate_children_kernel(uint32_t* d_in_repr, uint32_t in_num_bo
 std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards* current) {
     cudaStream_t stream;
     cudaError_t err = cudaStreamCreate(&stream);
-    if (err != cudaSuccess) {
-        fprintf(stderr, "cudaStreamCreate failed: %s\n", cudaGetErrorString(err));
-        exit(1);
-    }
+    checkCudaError(err, "cudaStreamCreate failed in solve_multiple_sudoku");
 
     uint32_t original_num = current->get_num_boards();
 
@@ -292,26 +293,28 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards* current
 
         uint8_t* d_next_pos = nullptr;
         err = cudaMalloc(&d_next_pos, num_boards * sizeof(uint8_t));
-        if (err != cudaSuccess) { /* Handle error */ }
+        checkCudaError(err, "cudaMalloc failed for d_next_pos");
 
         uint32_t* d_num_children_out = nullptr;
         err = cudaMalloc(&d_num_children_out, num_boards * sizeof(uint32_t));
-        if (err != cudaSuccess) { /* Handle error */ }
+        checkCudaError(err, "cudaMalloc failed for d_num_children_out");
 
         int threads = 256;
         int blocks = (num_boards + threads - 1) / threads;
         find_next_cell_kernel << <blocks, threads, 0, stream >> > (current->repr, num_boards, d_next_pos, d_num_children_out);
-        cudaStreamSynchronize(stream);
+        checkCudaError(cudaGetLastError(), "find_next_cell_kernel launch failed");
+        checkCudaError(cudaStreamSynchronize(stream), "cudaStreamSynchronize failed after find_next_cell_kernel");
 
         // Compute new_num using Thrust reduce on device
         uint32_t new_num = thrust::reduce(thrust::cuda::par.on(stream),
             thrust::device_ptr<uint32_t>(d_num_children_out),
             thrust::device_ptr<uint32_t>(d_num_children_out + num_boards),
             0u);
+        checkCudaError(cudaStreamSynchronize(stream), "cudaStreamSynchronize failed after thrust::reduce");
 
         if (new_num == 0) {
-            cudaFree(d_next_pos);
-            cudaFree(d_num_children_out);
+            checkCudaError(cudaFree(d_next_pos), "cudaFree failed for d_next_pos");
+            checkCudaError(cudaFree(d_num_children_out), "cudaFree failed for d_num_children_out");
             break;
         }
 
@@ -320,26 +323,29 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards* current
             thrust::device_ptr<uint8_t>(d_next_pos),
             thrust::device_ptr<uint8_t>(d_next_pos + num_boards),
             [] __device__(uint8_t pos) { return pos < 200; });
+        checkCudaError(cudaStreamSynchronize(stream), "cudaStreamSynchronize failed after thrust::count_if");
 
         bool all_solved = (unsolved_count == 0);
 
         uint32_t* d_prefixes = nullptr;
         err = cudaMalloc(&d_prefixes, num_boards * sizeof(uint32_t));
-        if (err != cudaSuccess) { /* Handle error */ }
+        checkCudaError(err, "cudaMalloc failed for d_prefixes");
 
         thrust::exclusive_scan(thrust::cuda::par.on(stream),
             thrust::device_ptr<uint32_t>(d_num_children_out),
             thrust::device_ptr<uint32_t>(d_num_children_out + num_boards),
             thrust::device_ptr<uint32_t>(d_prefixes));
+        checkCudaError(cudaStreamSynchronize(stream), "cudaStreamSynchronize failed after thrust::exclusive_scan");
 
         SudokuBoards* out_ptr = new SudokuBoards(new_num);
 
         generate_children_kernel << <blocks, threads, 0, stream >> > (current->repr, num_boards, d_next_pos, d_prefixes, out_ptr->repr, new_num);
-        cudaStreamSynchronize(stream);
+        checkCudaError(cudaGetLastError(), "generate_children_kernel launch failed");
+        checkCudaError(cudaStreamSynchronize(stream), "cudaStreamSynchronize failed after generate_children_kernel");
 
-        cudaFree(d_next_pos);
-        cudaFree(d_num_children_out);
-        cudaFree(d_prefixes);
+        checkCudaError(cudaFree(d_next_pos), "cudaFree failed for d_next_pos");
+        checkCudaError(cudaFree(d_num_children_out), "cudaFree failed for d_num_children_out");
+        checkCudaError(cudaFree(d_prefixes), "cudaFree failed for d_prefixes");
 
         // Clean up old current
         delete current;
@@ -355,8 +361,13 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards* current
     uint32_t final_num_boards = current->get_num_boards();
     size_t bytes = 19ULL * final_num_boards * sizeof(uint32_t);
     uint32_t* h_repr = (uint32_t*)malloc(bytes);
-    cudaMemcpyAsync(h_repr, current->repr, bytes, cudaMemcpyDeviceToHost, stream);
-    cudaStreamSynchronize(stream);
+    if (h_repr == nullptr) {
+        fprintf(stderr, "malloc failed for h_repr\n");
+        exit(1);
+    }
+    err = cudaMemcpyAsync(h_repr, current->repr, bytes, cudaMemcpyDeviceToHost, stream);
+    checkCudaError(err, "cudaMemcpyAsync failed for final h_repr");
+    checkCudaError(cudaStreamSynchronize(stream), "cudaStreamSynchronize failed after final cudaMemcpyAsync");
 
     std::vector<std::array<uint8_t, 81>> solutions(original_num);
     std::vector<bool> found(original_num, false);
@@ -384,7 +395,7 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards* current
 
     // Final cleanup
     delete current;
-    cudaStreamDestroy(stream);
+    checkCudaError(cudaStreamDestroy(stream), "cudaStreamDestroy failed");
 
     return solutions;
 }
@@ -398,10 +409,7 @@ void solveGPU(const std::string& input_file, const std::string& output_file, int
 
     cudaStream_t stream;
     cudaError_t err = cudaStreamCreate(&stream);
-    if (err != cudaSuccess) {
-        fprintf(stderr, "cudaStreamCreate failed: %s\n", cudaGetErrorString(err));
-        exit(1);
-    }
+    checkCudaError(err, "cudaStreamCreate failed in solveGPU");
 
     std::string line;
     std::vector<std::vector<uint32_t>> temp_reprs;
@@ -435,11 +443,16 @@ void solveGPU(const std::string& input_file, const std::string& output_file, int
 
     uint32_t num_boards = temp_reprs.size();
     if (num_boards == 0) {
-        cudaStreamDestroy(stream);
+        checkCudaError(cudaStreamDestroy(stream), "cudaStreamDestroy failed in solveGPU (early exit)");
         return;
     }
 
     uint32_t* h_repr = new uint32_t[19ULL * num_boards]();
+    if (h_repr == nullptr) {
+        fprintf(stderr, "new failed for h_repr\n");
+        checkCudaError(cudaStreamDestroy(stream), "cudaStreamDestroy failed in solveGPU (after new failure)");
+        exit(1);
+    }
     for (uint32_t b = 0; b < num_boards; ++b) {
         for (uint8_t f = 0; f < 18; ++f) {
             h_repr[f * num_boards + b] = temp_reprs[b][f];
@@ -453,8 +466,9 @@ void solveGPU(const std::string& input_file, const std::string& output_file, int
 
     SudokuBoards* inputs_ptr = new SudokuBoards(num_boards);
     size_t bytes = 19ULL * num_boards * sizeof(uint32_t);
-    cudaMemcpyAsync(inputs_ptr->repr, h_repr, bytes, cudaMemcpyHostToDevice, stream);
-    cudaStreamSynchronize(stream);
+    err = cudaMemcpyAsync(inputs_ptr->repr, h_repr, bytes, cudaMemcpyHostToDevice, stream);
+    checkCudaError(err, "cudaMemcpyAsync failed for inputs_ptr");
+    checkCudaError(cudaStreamSynchronize(stream), "cudaStreamSynchronize failed after cudaMemcpyAsync for inputs_ptr");
     delete[] h_repr;
 
     std::vector<std::array<uint8_t, 81>> solutions = solve_multiple_sudoku(inputs_ptr);
@@ -464,7 +478,7 @@ void solveGPU(const std::string& input_file, const std::string& output_file, int
     std::chrono::duration<double> duration = end - start;
     std::cout << "Time taken: " << duration.count() << " seconds" << std::endl;
 
-    cudaStreamDestroy(stream);
+    checkCudaError(cudaStreamDestroy(stream), "cudaStreamDestroy failed in solveGPU");
 
     std::ofstream out(output_file);
     if (!out.is_open()) {
