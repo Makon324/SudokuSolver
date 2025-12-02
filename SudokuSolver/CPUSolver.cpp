@@ -124,7 +124,7 @@ const int MAX_LEVELS = 81;
 
 uint8_t find_next_pos(SudokuBoard &board){
     int current_best = 10;
-	uint8_t best_pos;
+	uint8_t best_pos = -1;
     bool is_solved = true;
     for (uint8_t i = 0; i < 81; i++) {
         if (!board.is_set(i)) {
