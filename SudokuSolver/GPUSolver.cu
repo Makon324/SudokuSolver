@@ -297,8 +297,27 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards* current
 
     uint32_t original_num = current->get_num_boards();
 
+    const uint32_t MAX_PREALLOC_BOARDS = 1048576; // 1M boards, adjust based on expected max
+    size_t prealloc_bytes = 19ULL * MAX_PREALLOC_BOARDS * sizeof(uint32_t);
+
+    uint32_t* repr_a = nullptr;
+    checkCudaError(cudaMalloc(&repr_a, prealloc_bytes), "cudaMalloc failed for repr_a");
+
+    uint32_t* repr_b = nullptr;
+    checkCudaError(cudaMalloc(&repr_b, prealloc_bytes), "cudaMalloc failed for repr_b");
+
+    // Assume original_num <= MAX_PREALLOC_BOARDS; if not, handle similarly by allocating larger
+    size_t initial_bytes = 19ULL * original_num * sizeof(uint32_t);
+    checkCudaError(cudaMemcpy(repr_a, current->repr, initial_bytes, cudaMemcpyDeviceToDevice), "cudaMemcpy failed for initial copy");
+    delete current;
+
+    uint32_t* input_repr = repr_a;
+    uint32_t input_max = MAX_PREALLOC_BOARDS;
+    uint32_t* output_repr = repr_b;
+    uint32_t output_max = MAX_PREALLOC_BOARDS;
+    uint32_t num_boards = original_num;
+
     for (int loop = 0; loop < MAX_LEVELS; ++loop) {
-        uint32_t num_boards = current->get_num_boards();
         std::cout << "Loop " << loop << ", Boards: " << num_boards << std::endl;
         if (num_boards == 0) break;
 
@@ -312,7 +331,7 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards* current
 
         int threads = 256;
         int blocks = (num_boards + threads - 1) / threads;
-        find_next_cell_kernel << <blocks, threads, 0, stream >> > (current->repr, num_boards, d_next_pos, d_num_children_out);
+        find_next_cell_kernel << <blocks, threads, 0, stream >> > (input_repr, num_boards, d_next_pos, d_num_children_out);
         checkCudaError(cudaGetLastError(), "find_next_cell_kernel launch failed");
         checkCudaError(cudaStreamSynchronize(stream), "cudaStreamSynchronize failed after find_next_cell_kernel");
 
@@ -348,9 +367,15 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards* current
             thrust::device_ptr<uint32_t>(d_prefixes));
         checkCudaError(cudaStreamSynchronize(stream), "cudaStreamSynchronize failed after thrust::exclusive_scan");
 
-        SudokuBoards* out_ptr = new SudokuBoards(new_num);
+        // Handle output buffer, reallocate if overflow
+        if (new_num > output_max) {
+            checkCudaError(cudaFree(output_repr), "cudaFree failed for output_repr (overflow)");
+            size_t new_bytes = 19ULL * new_num * sizeof(uint32_t);
+            checkCudaError(cudaMalloc(&output_repr, new_bytes), "cudaMalloc failed for output_repr (overflow)");
+            output_max = new_num;
+        }
 
-        generate_children_kernel << <blocks, threads, 0, stream >> > (current->repr, num_boards, d_next_pos, d_prefixes, out_ptr->repr, new_num);
+        generate_children_kernel << <blocks, threads, 0, stream >> > (input_repr, num_boards, d_next_pos, d_prefixes, output_repr, new_num);
         checkCudaError(cudaGetLastError(), "generate_children_kernel launch failed");
         checkCudaError(cudaStreamSynchronize(stream), "cudaStreamSynchronize failed after generate_children_kernel");
 
@@ -358,25 +383,24 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards* current
         checkCudaError(cudaFree(d_num_children_out), "cudaFree failed for d_num_children_out");
         checkCudaError(cudaFree(d_prefixes), "cudaFree failed for d_prefixes");
 
-        // Clean up old current
-        delete current;
-
-        // Move to new
-        current = out_ptr;
+        // Swap input and output
+        std::swap(input_repr, output_repr);
+        std::swap(input_max, output_max);
+        num_boards = new_num;
 
         if (all_solved) {
             break;
         }
     }
 
-    uint32_t final_num_boards = current->get_num_boards();
+    uint32_t final_num_boards = num_boards;
     size_t bytes = 19ULL * final_num_boards * sizeof(uint32_t);
     uint32_t* h_repr = (uint32_t*)malloc(bytes);
     if (h_repr == nullptr) {
         fprintf(stderr, "malloc failed for h_repr\n");
         exit(1);
     }
-    err = cudaMemcpyAsync(h_repr, current->repr, bytes, cudaMemcpyDeviceToHost, stream);
+    err = cudaMemcpyAsync(h_repr, input_repr, bytes, cudaMemcpyDeviceToHost, stream);
     checkCudaError(err, "cudaMemcpyAsync failed for final h_repr");
     checkCudaError(cudaStreamSynchronize(stream), "cudaStreamSynchronize failed after final cudaMemcpyAsync");
 
@@ -405,7 +429,8 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards* current
     free(h_repr);
 
     // Final cleanup
-    delete current;
+    checkCudaError(cudaFree(input_repr), "cudaFree failed for final input_repr");
+    checkCudaError(cudaFree(output_repr), "cudaFree failed for final output_repr");
     checkCudaError(cudaStreamDestroy(stream), "cudaStreamDestroy failed");
 
     return solutions;
