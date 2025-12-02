@@ -6,7 +6,7 @@
 #include <vector>
 #include <tuple>
 #include <stack>
-#include <chrono>  // Added for timing
+#include <chrono>
 
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -15,8 +15,8 @@
 #include <thrust/execution_policy.h>
 #include <thrust/device_ptr.h>
 #include <thrust/scan.h>
-#include <thrust/reduce.h>  // Added for reduce
-#include <thrust/count.h>   // Added for count_if
+#include <thrust/reduce.h>
+#include <thrust/count.h>
 #include <thrust/system/cuda/execution_policy.h>
 
 class SudokuBoards
@@ -133,6 +133,21 @@ __host__ __device__ inline uint32_t get_id(uint32_t* repr, uint32_t num_boards, 
     return repr[18 * num_boards + board_idx];
 }
 
+__device__ uint32_t get_mask(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint16_t base_index) {
+    uint8_t repr_idx = base_index >> 5;
+    uint8_t bit_index = base_index & 31;
+    uint32_t val1 = repr[repr_idx * num_boards + board_idx];
+    if (bit_index <= 23) {
+        return (val1 >> bit_index) & 0x1FF;
+    }
+    else {
+        uint32_t val2 = repr[(repr_idx + 1) * num_boards + board_idx];
+        uint32_t low = val1 >> bit_index;
+        uint32_t high = val2 << (32 - bit_index);
+        return (low | high) & 0x1FF;
+    }
+}
+
 const int MAX_LEVELS = 81;
 
 // Kernel 1: Find Next Cell (MRV), return next_pos and number of boards to be generated
@@ -147,12 +162,15 @@ __global__ void find_next_cell_kernel(uint32_t* d_repr, uint32_t num_boards, uin
     for (uint8_t pos = 0; pos < 81; ++pos) {
         if (!is_set(d_repr, num_boards, board_idx, pos)) {
             is_solved = false;
-            int count = 0;
-            for (uint8_t num = 0; num < 9; ++num) {
-                if (!is_blocked(d_repr, num_boards, board_idx, pos, num)) {
-                    ++count;
-                }
-            }
+            uint16_t base_row = 9 * (pos / 9);
+            uint16_t base_col = 81 + 9 * (pos % 9);
+            uint16_t base_box = 162 + 9 * (((pos % 9) / 3) * 3 + (pos / 27));
+            uint32_t row_m = get_mask(d_repr, num_boards, board_idx, base_row);
+            uint32_t col_m = get_mask(d_repr, num_boards, board_idx, base_col);
+            uint32_t box_m = get_mask(d_repr, num_boards, board_idx, base_box);
+            uint32_t used = row_m | col_m | box_m;
+            uint32_t avail = ~used & 0x1FF;
+            int count = __popc(avail);
             if (count < min_poss) {
                 min_poss = count;
                 best_pos = pos;
@@ -197,17 +215,23 @@ __global__ void generate_children_kernel(uint32_t* d_in_repr, uint32_t in_num_bo
     }
 
     // generate children
+    uint16_t base_row = 9 * (pos / 9);
+    uint16_t base_col = 81 + 9 * (pos % 9);
+    uint16_t base_box = 162 + 9 * (((pos % 9) / 3) * 3 + (pos / 27));
+    uint32_t row_m = get_mask(d_in_repr, in_num_boards, board_idx, base_row);
+    uint32_t col_m = get_mask(d_in_repr, in_num_boards, board_idx, base_col);
+    uint32_t box_m = get_mask(d_in_repr, in_num_boards, board_idx, base_box);
+    uint32_t used = row_m | col_m | box_m;
+    uint32_t avail = ~used & 0x1FF;
     uint32_t out_idx = out_start;
-    for (uint8_t num = 0; num < 9; ++num) {
-        if (!is_blocked(d_in_repr, in_num_boards, board_idx, pos, num)) {
-            // copy board
-            for (uint8_t field = 0; field < 19; ++field) {
-                d_out_repr[field * out_num_boards + out_idx] = d_in_repr[field * in_num_boards + board_idx];
-            }
-            // set the new value
-            set(d_out_repr, out_num_boards, out_idx, pos, num);
-            ++out_idx;
+    while (avail != 0) {
+        uint32_t bit = __ffs(avail) - 1;
+        for (uint8_t field = 0; field < 19; ++field) {
+            d_out_repr[field * out_num_boards + out_idx] = d_in_repr[field * in_num_boards + board_idx];
         }
+        set(d_out_repr, out_num_boards, out_idx, pos, bit);
+        avail &= ~(1u << bit);
+        ++out_idx;
     }
 }
 
