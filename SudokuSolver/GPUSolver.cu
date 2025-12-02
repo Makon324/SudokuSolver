@@ -22,7 +22,7 @@
 
 void checkCudaError(cudaError_t err, const char* msg) {
     if (err != cudaSuccess) {
-        fprintf(stderr, "%s: %s\n", msg, cudaGetErrorString(err));
+        std::cerr << msg << cudaGetErrorString(err) << std::endl;
         exit(1);
     }
 }
@@ -157,8 +157,15 @@ const int MAX_LEVELS = 81;
 
 // Kernel 1: Find Next Cell (MRV), return next_pos and number of boards to be generated
 __global__ void find_next_cell_kernel(uint32_t* d_repr, uint32_t num_boards, uint8_t* d_next_pos, uint32_t* d_num_children_out) {
+    extern __shared__ uint32_t sh_repr[];
     uint32_t board_idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (board_idx >= num_boards) return;
+
+    int tid = threadIdx.x;
+    uint32_t* my_repr = &sh_repr[tid * 19];
+    for (int f = 0; f < 19; ++f) {
+        my_repr[f] = d_repr[f * num_boards + board_idx];
+    }
 
     // Propagation of singles
     bool changed = true;
@@ -166,13 +173,13 @@ __global__ void find_next_cell_kernel(uint32_t* d_repr, uint32_t num_boards, uin
     while (changed && !impossible) {
         changed = false;
         for (uint8_t pos = 0; pos < 81; ++pos) {
-            if (is_set(d_repr, num_boards, board_idx, pos)) continue;
+            if (is_set(my_repr, 1, 0, pos)) continue;
             uint16_t base_row = 9 * (pos / 9);
             uint16_t base_col = 81 + 9 * (pos % 9);
             uint16_t base_box = 162 + 9 * (((pos % 9) / 3) * 3 + (pos / 27));
-            uint32_t row_m = get_mask(d_repr, num_boards, board_idx, base_row);
-            uint32_t col_m = get_mask(d_repr, num_boards, board_idx, base_col);
-            uint32_t box_m = get_mask(d_repr, num_boards, board_idx, base_box);
+            uint32_t row_m = get_mask(my_repr, 1, 0, base_row);
+            uint32_t col_m = get_mask(my_repr, 1, 0, base_col);
+            uint32_t box_m = get_mask(my_repr, 1, 0, base_box);
             uint32_t used = row_m | col_m | box_m;
             uint32_t avail = ~used & 0x1FF;
             int count = __popc(avail);
@@ -182,7 +189,7 @@ __global__ void find_next_cell_kernel(uint32_t* d_repr, uint32_t num_boards, uin
             }
             else if (count == 1) {
                 uint32_t bit = __ffs(avail) - 1;
-                set(d_repr, num_boards, board_idx, pos, bit);
+                set(my_repr, 1, 0, pos, bit);
                 changed = true;
             }
         }
@@ -191,6 +198,10 @@ __global__ void find_next_cell_kernel(uint32_t* d_repr, uint32_t num_boards, uin
     if (impossible) {
         d_next_pos[board_idx] = 255;
         d_num_children_out[board_idx] = 0;
+        // Copy back modified repr (though impossible, for consistency)
+        for (int f = 0; f < 19; ++f) {
+            d_repr[f * num_boards + board_idx] = my_repr[f];
+        }
         return;
     }
 
@@ -200,14 +211,14 @@ __global__ void find_next_cell_kernel(uint32_t* d_repr, uint32_t num_boards, uin
     bool is_solved = true;
 
     for (uint8_t pos = 0; pos < 81; ++pos) {
-        if (!is_set(d_repr, num_boards, board_idx, pos)) {
+        if (!is_set(my_repr, 1, 0, pos)) {
             is_solved = false;
             uint16_t base_row = 9 * (pos / 9);
             uint16_t base_col = 81 + 9 * (pos % 9);
             uint16_t base_box = 162 + 9 * (((pos % 9) / 3) * 3 + (pos / 27));
-            uint32_t row_m = get_mask(d_repr, num_boards, board_idx, base_row);
-            uint32_t col_m = get_mask(d_repr, num_boards, board_idx, base_col);
-            uint32_t box_m = get_mask(d_repr, num_boards, board_idx, base_box);
+            uint32_t row_m = get_mask(my_repr, 1, 0, base_row);
+            uint32_t col_m = get_mask(my_repr, 1, 0, base_col);
+            uint32_t box_m = get_mask(my_repr, 1, 0, base_box);
             uint32_t used = row_m | col_m | box_m;
             uint32_t avail = ~used & 0x1FF;
             int count = __popc(avail);
@@ -237,12 +248,24 @@ __global__ void find_next_cell_kernel(uint32_t* d_repr, uint32_t num_boards, uin
     }
 
     d_num_children_out[board_idx] = num_children;
+
+    // Copy back the modified repr
+    for (int f = 0; f < 19; ++f) {
+        d_repr[f * num_boards + board_idx] = my_repr[f];
+    }
 }
 
 // Kernel 2: Generate Children
 __global__ void generate_children_kernel(uint32_t* d_in_repr, uint32_t in_num_boards, uint8_t* d_next_pos, uint32_t* d_prefixes, uint32_t* d_out_repr, uint32_t out_num_boards) {
+    extern __shared__ uint32_t sh_repr[];
     uint32_t board_idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (board_idx >= in_num_boards) return;
+
+    int tid = threadIdx.x;
+    uint32_t* my_repr = &sh_repr[tid * 19];
+    for (int f = 0; f < 19; ++f) {
+        my_repr[f] = d_in_repr[f * in_num_boards + board_idx];
+    }
 
     uint8_t pos = d_next_pos[board_idx];
     if (pos == 255) return; // impossible, no children
@@ -253,7 +276,7 @@ __global__ void generate_children_kernel(uint32_t* d_in_repr, uint32_t in_num_bo
         // solved, copy as is
         uint32_t out_idx = out_start;
         for (uint8_t field = 0; field < 19; ++field) {
-            d_out_repr[field * out_num_boards + out_idx] = d_in_repr[field * in_num_boards + board_idx];
+            d_out_repr[field * out_num_boards + out_idx] = my_repr[field];
         }
         return;
     }
@@ -262,16 +285,16 @@ __global__ void generate_children_kernel(uint32_t* d_in_repr, uint32_t in_num_bo
     uint16_t base_row = 9 * (pos / 9);
     uint16_t base_col = 81 + 9 * (pos % 9);
     uint16_t base_box = 162 + 9 * (((pos % 9) / 3) * 3 + (pos / 27));
-    uint32_t row_m = get_mask(d_in_repr, in_num_boards, board_idx, base_row);
-    uint32_t col_m = get_mask(d_in_repr, in_num_boards, board_idx, base_col);
-    uint32_t box_m = get_mask(d_in_repr, in_num_boards, board_idx, base_box);
+    uint32_t row_m = get_mask(my_repr, 1, 0, base_row);
+    uint32_t col_m = get_mask(my_repr, 1, 0, base_col);
+    uint32_t box_m = get_mask(my_repr, 1, 0, base_box);
     uint32_t used = row_m | col_m | box_m;
     uint32_t avail = ~used & 0x1FF;
     uint32_t out_idx = out_start;
     while (avail != 0) {
         uint32_t bit = __ffs(avail) - 1;
         for (uint8_t field = 0; field < 19; ++field) {
-            d_out_repr[field * out_num_boards + out_idx] = d_in_repr[field * in_num_boards + board_idx];
+            d_out_repr[field * out_num_boards + out_idx] = my_repr[field];
         }
         set(d_out_repr, out_num_boards, out_idx, pos, bit);
         avail &= ~(1u << bit);
@@ -321,7 +344,8 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards* current
 
         int threads = 256;
         int blocks = (num_boards + threads - 1) / threads;
-        find_next_cell_kernel << <blocks, threads, 0, stream >> > (input_repr, num_boards, d_next_pos, d_num_children_out);
+        size_t shared_size = threads * 19 * sizeof(uint32_t);
+        find_next_cell_kernel << <blocks, threads, shared_size, stream >> > (input_repr, num_boards, d_next_pos, d_num_children_out);
         checkCudaError(cudaGetLastError(), "find_next_cell_kernel launch failed");
         checkCudaError(cudaStreamSynchronize(stream), "cudaStreamSynchronize failed after find_next_cell_kernel");
 
@@ -365,7 +389,7 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards* current
             output_max = new_num;
         }
 
-        generate_children_kernel << <blocks, threads, 0, stream >> > (input_repr, num_boards, d_next_pos, d_prefixes, output_repr, new_num);
+        generate_children_kernel << <blocks, threads, shared_size, stream >> > (input_repr, num_boards, d_next_pos, d_prefixes, output_repr, new_num);
         checkCudaError(cudaGetLastError(), "generate_children_kernel launch failed");
         checkCudaError(cudaStreamSynchronize(stream), "cudaStreamSynchronize failed after generate_children_kernel");
 
