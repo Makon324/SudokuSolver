@@ -218,12 +218,11 @@ __global__ void generate_children_kernel(SudokuBoards& in_boards, uint8_t* next_
 }
 
 // Main function
-std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards& inputs) {
-    uint32_t original_num = inputs.get_num_boards();
-    SudokuBoards current(std::move(inputs));  // Move from inputs; caller should be aware inputs is invalidated
+std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards* current) {
+    uint32_t original_num = current->get_num_boards();
 
     for (int level = 0; level < MAX_LEVELS; ++level) {
-        uint32_t num_boards = current.get_num_boards();
+        uint32_t num_boards = current->get_num_boards();
         std::cout << "Level " << level << ", Boards: " << num_boards << std::endl;
         if (num_boards == 0) break;
 
@@ -237,7 +236,7 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards& inputs)
 
         int threads = 256;
         int blocks = (num_boards + threads - 1) / threads;
-        find_next_cell_kernel << <blocks, threads >> > (current, next_pos, num_children_out);
+        find_next_cell_kernel <<<blocks, threads>>> (*current, next_pos, num_children_out);
         cudaDeviceSynchronize();
 
         cudaMemPrefetchAsync(num_children_out, num_boards * sizeof(uint32_t), cudaCpuDeviceId);
@@ -263,46 +262,56 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards& inputs)
             thrust::device_ptr<uint32_t>(num_children_out + num_boards),
             thrust::device_ptr<uint32_t>(prefixes));
 
-        SudokuBoards out_boards(new_num);
+        SudokuBoards* out_ptr = nullptr;
+        err = cudaMallocManaged(&out_ptr, sizeof(SudokuBoards));
+        if (err != cudaSuccess) { /* Handle error */ }
+        new (out_ptr) SudokuBoards(new_num);
 
-        generate_children_kernel << <blocks, threads >> > (current, next_pos, prefixes, out_boards);
+        generate_children_kernel <<<blocks, threads>>> (*current, next_pos, prefixes, *out_ptr);
         cudaDeviceSynchronize();
 
         cudaFree(next_pos);
         cudaFree(num_children_out);
         cudaFree(prefixes);
 
-        current = std::move(out_boards);
-    }
+        // Clean up old current
+        current->~SudokuBoards();
+        cudaFree(current);
 
-    // Prefetch final data to host removed for compatibility
+        // Move to new
+        current = out_ptr;
+    }
 
     cudaDeviceSynchronize();
 
-    cudaMemPrefetchAsync(current.repr, 19ULL * current.get_num_boards() * sizeof(uint32_t), cudaCpuDeviceId);
+    cudaMemPrefetchAsync(current->repr, 19ULL * current->get_num_boards() * sizeof(uint32_t), cudaCpuDeviceId);
     cudaDeviceSynchronize();
 
     std::vector<std::array<uint8_t, 81>> solutions(original_num);
     std::vector<bool> found(original_num, false);
 
-    for (uint32_t board_idx = 0; board_idx < current.get_num_boards(); ++board_idx) {
-        uint32_t id = current.get_id(board_idx);
+    for (uint32_t board_idx = 0; board_idx < current->get_num_boards(); ++board_idx) {
+        uint32_t id = current->get_id(board_idx);
         if (id >= original_num || found[id]) continue;
 
         auto& sol = solutions[id];
         bool valid = true;
         for (uint8_t pos = 0; pos < 81; ++pos) {
-            uint8_t num = current.get_number_at_pos(board_idx, pos);
-            if (num == 0) {
+            uint8_t num = current->get_number_at_pos(board_idx, pos) - 1;  // Adjust if needed, since stored as +1
+            if (num + 1 == 0) {  // Check for unset (0)
                 valid = false;
                 break;
             }
-            sol[pos] = num;
+            sol[pos] = num + 1;
         }
         if (valid) {
             found[id] = true;
         }
     }
+
+    // Final cleanup
+    current->~SudokuBoards();
+    cudaFree(current);
 
     return solutions;
 }
@@ -344,18 +353,24 @@ void solveGPU(const std::string& input_file, const std::string& output_file, int
     }
     file.close();
 
-    uint32_t num_boards = temp_boards.size();
-    if (num_boards == 0) return;
+uint32_t num_boards = temp_boards.size();
+if (num_boards == 0) return;
 
-    SudokuBoards inputs(num_boards);
-    for (uint32_t b = 0; b < num_boards; ++b) {
-        for (uint8_t f = 0; f < 18; ++f) {
-            inputs.repr[f * num_boards + b] = temp_boards[b].repr[f];
-        }
-        inputs.repr[18 * num_boards + b] = b;
+SudokuBoards* inputs_ptr = nullptr;
+cudaError_t err = cudaMallocManaged(&inputs_ptr, sizeof(SudokuBoards));
+if (err != cudaSuccess) { /* Handle error, e.g., fprintf(stderr, "Failed to allocate managed memory for inputs: %s\n", cudaGetErrorString(err)); exit(1); */ }
+new (inputs_ptr) SudokuBoards(num_boards);
+
+for (uint32_t b = 0; b < num_boards; ++b) {
+    for (uint8_t f = 0; f < 18; ++f) {
+        inputs_ptr->repr[f * num_boards + b] = temp_boards[b].repr[f];
     }
+    inputs_ptr->repr[18 * num_boards + b] = b;
+}
 
-    std::vector<std::array<uint8_t, 81>> solutions = solve_multiple_sudoku(inputs);
+std::vector<std::array<uint8_t, 81>> solutions = solve_multiple_sudoku(inputs_ptr);
+
+// Clean up inputs_ptr after the call (solve_multiple_sudoku will have freed it internally, but confirm in the modified function)
 
     std::ofstream out(output_file);
     if (!out.is_open()) {
