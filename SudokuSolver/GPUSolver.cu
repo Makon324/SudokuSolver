@@ -155,6 +155,41 @@ __global__ void find_next_cell_kernel(uint32_t* d_repr, uint32_t num_boards, uin
     uint32_t board_idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (board_idx >= num_boards) return;
 
+    // Propagation of singles
+    bool changed = true;
+    bool impossible = false;
+    while (changed && !impossible) {
+        changed = false;
+        for (uint8_t pos = 0; pos < 81; ++pos) {
+            if (is_set(d_repr, num_boards, board_idx, pos)) continue;
+            uint16_t base_row = 9 * (pos / 9);
+            uint16_t base_col = 81 + 9 * (pos % 9);
+            uint16_t base_box = 162 + 9 * (((pos % 9) / 3) * 3 + (pos / 27));
+            uint32_t row_m = get_mask(d_repr, num_boards, board_idx, base_row);
+            uint32_t col_m = get_mask(d_repr, num_boards, board_idx, base_col);
+            uint32_t box_m = get_mask(d_repr, num_boards, board_idx, base_box);
+            uint32_t used = row_m | col_m | box_m;
+            uint32_t avail = ~used & 0x1FF;
+            int count = __popc(avail);
+            if (count == 0) {
+                impossible = true;
+                break;
+            }
+            else if (count == 1) {
+                uint32_t bit = __ffs(avail) - 1;
+                set(d_repr, num_boards, board_idx, pos, bit);
+                changed = true;
+            }
+        }
+    }
+
+    if (impossible) {
+        d_next_pos[board_idx] = 255;
+        d_num_children_out[board_idx] = 0;
+        return;
+    }
+
+    // Now find MRV
     int min_poss = 10;
     uint8_t best_pos = 0;
     bool is_solved = true;
@@ -171,6 +206,10 @@ __global__ void find_next_cell_kernel(uint32_t* d_repr, uint32_t num_boards, uin
             uint32_t used = row_m | col_m | box_m;
             uint32_t avail = ~used & 0x1FF;
             int count = __popc(avail);
+            if (count == 0) {
+                impossible = true;
+                break;
+            }
             if (count < min_poss) {
                 min_poss = count;
                 best_pos = pos;
@@ -179,13 +218,13 @@ __global__ void find_next_cell_kernel(uint32_t* d_repr, uint32_t num_boards, uin
     }
 
     uint32_t num_children;
-    if (is_solved) {
-        d_next_pos[board_idx] = 200;
-        num_children = 1;
-    }
-    else if (min_poss == 0) {
+    if (impossible) {
         d_next_pos[board_idx] = 255;
         num_children = 0;
+    }
+    else if (is_solved) {
+        d_next_pos[board_idx] = 200;
+        num_children = 1;
     }
     else {
         d_next_pos[board_idx] = best_pos;
