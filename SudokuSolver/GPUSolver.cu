@@ -6,6 +6,7 @@
 #include <vector>
 #include <tuple>
 #include <stack>
+#include <chrono>  // Added for timing
 
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -356,6 +357,9 @@ void solveGPU(const std::string& input_file, const std::string& output_file, int
     uint32_t num_boards = temp_boards.size();
     if (num_boards == 0) return;
 
+    // Start timing after reading
+    auto start = std::chrono::high_resolution_clock::now();
+
     SudokuBoards* inputs_ptr = nullptr;
     cudaError_t err = cudaMallocManaged(&inputs_ptr, sizeof(SudokuBoards));
     if (err != cudaSuccess) { /* Handle error, e.g., fprintf(stderr, "Failed to allocate managed memory for inputs: %s\n", cudaGetErrorString(err)); exit(1); */ }
@@ -369,6 +373,11 @@ void solveGPU(const std::string& input_file, const std::string& output_file, int
     }
 
     std::vector<std::array<uint8_t, 81>> solutions = solve_multiple_sudoku(inputs_ptr);
+
+    // End timing before writing
+    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> duration = end - start;
+    std::cout << "Time taken: " << duration.count() << " seconds" << std::endl;
 
     // Clean up inputs_ptr after the call (solve_multiple_sudoku will have freed it internally, but confirm in the modified function)
 

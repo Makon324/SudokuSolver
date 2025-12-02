@@ -6,7 +6,7 @@
 #include <vector>
 #include <tuple>
 #include <stack>
-#include <chrono>  // Added for timing
+
 
 void solveCPU(const std::string& input_file, const std::string& output_file, int count);
 
@@ -30,9 +30,6 @@ int main(int argc, char* argv[]) {
     std::string input_file = argv[3];
     std::string output_file = argv[4];
 
-    // Start timing
-    auto start = std::chrono::high_resolution_clock::now();
-
     if (method == "cpu") {
         solveCPU(input_file, output_file, count);
     }
@@ -43,13 +40,6 @@ int main(int argc, char* argv[]) {
         std::cerr << "Invalid method: " << method << ". Must be 'cpu' or 'gpu'." << std::endl;
         return 1;
     }
-
-    // End timing
-    auto end = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> duration = end - start;
-
-    // Display the time taken
-    std::cout << "Time taken: " << duration.count() << " seconds" << std::endl;
 
     return 0;
 }

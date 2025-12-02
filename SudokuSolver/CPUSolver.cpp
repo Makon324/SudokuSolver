@@ -6,7 +6,7 @@
 #include <vector>
 #include <tuple>
 #include <stack>
-
+#include <chrono>  // Added for timing
 
 
 class SudokuBoard
@@ -276,7 +276,17 @@ void solveCPU(const std::string& input_file, const std::string& output_file, int
     if (boards.empty()) {
         return;
     }
+
+    // Start timing after reading
+    auto start = std::chrono::high_resolution_clock::now();
+
     std::vector<std::array<uint8_t, 81>> solutions = SolveSudokusCPU(boards);
+
+    // End timing before writing
+    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> duration = end - start;
+    std::cout << "Time taken: " << duration.count() << " seconds" << std::endl;
+
     write_solutionsCPU(output_file, solutions);
 }
 
