@@ -17,7 +17,10 @@
 #include <thrust/count.h>
 #include <thrust/system/cuda/execution_policy.h>
 
-
+/**
+ * Checks for CUDA errors and prints an error message if one occurred.
+ * Exits the program if an error is detected.
+ */
 void checkCudaError(cudaError_t err, const char* msg) {
     if (err != cudaSuccess) {
         fprintf(stderr, "%s: %s\n", msg, cudaGetErrorString(err));
@@ -25,12 +28,23 @@ void checkCudaError(cudaError_t err, const char* msg) {
     }
 }
 
+/**
+ * Class to manage representations of multiple Sudoku boards on GPU device memory.
+ * Each board is compactly represented using 19 uint32_t values:
+ * - Indices 0-5: Bitmasks for rows (9 bits per row, but packed into uint32_t).
+ * - Indices 6-11: Bitmasks for columns.
+ * - Indices 12-17: Bitmasks for boxes.
+ * - Index 18: Board ID for tracking original puzzles.
+ */
 class SudokuBoards
 {
 public:
     uint32_t num_boards;
-    uint32_t* repr; // Device pointer
+    uint32_t* repr; // Device pointer to board representations
 
+    /**
+     * Constructor: Allocates device memory for the specified number of boards.
+     */
     SudokuBoards(uint32_t n) : num_boards(n), repr(nullptr) {
         size_t bytes = 19ULL * n * sizeof(uint32_t);
         cudaError_t err = cudaMalloc(&repr, bytes);
@@ -38,16 +52,17 @@ public:
         // No memset here; data will be copied or generated
     }
 
-    // Delete copy constructor and assignment
+    // Delete copy constructor and assignment to prevent unintended copies
     SudokuBoards(const SudokuBoards&) = delete;
     SudokuBoards& operator=(const SudokuBoards&) = delete;
 
-    // Allow move semantics if needed
+    // Move constructor: Transfers ownership of device memory
     SudokuBoards(SudokuBoards&& other) noexcept : num_boards(other.num_boards), repr(other.repr) {
         other.repr = nullptr;
         other.num_boards = 0;
     }
 
+    // Move assignment: Transfers ownership and frees existing memory if needed
     SudokuBoards& operator=(SudokuBoards&& other) noexcept {
         if (this != &other) {
             if (repr != nullptr) {
@@ -61,6 +76,9 @@ public:
         return *this;
     }
 
+    /**
+     * Destructor: Frees the device memory if allocated.
+     */
     ~SudokuBoards() {
         if (repr != nullptr) {
             checkCudaError(cudaFree(repr), "cudaFree failed in SudokuBoards destructor");
@@ -70,54 +88,69 @@ public:
     uint32_t get_num_boards() const { return num_boards; }
 };
 
+/**
+ * Bit manipulation helper functions for Sudoku board representation.
+ * These functions operate on bitmasks for rows, columns, boxes, and cell values.
+ * They are marked __host__ __device__ to allow use on both CPU and GPU.
+ */
+
+ // Sets a specific bit in the bitmask representation
 __host__ __device__ inline void set_index(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint16_t index) {
     uint8_t repr_idx = index >> 5; // index / 32
     uint8_t bit_index = index & 31; // index % 32
     repr[repr_idx * num_boards + board_idx] |= (1U << bit_index);
 }
 
+// Unsets a specific bit in the bitmask representation
 __host__ __device__ inline void unset_index(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint16_t index) {
     uint8_t repr_idx = index >> 5; // index / 32
     uint8_t bit_index = index & 31; // index % 32
     repr[repr_idx * num_boards + board_idx] &= ~(1U << bit_index);
 }
 
+// Checks if a specific bit is set in the bitmask
 __host__ __device__ inline bool get_index(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint16_t index) {
     uint8_t repr_idx = index >> 5; // index / 32
     uint8_t bit_index = index & 31; // index % 32
     return ((repr[repr_idx * num_boards + board_idx] & (1U << bit_index)) > 0);
 }
 
+// Sets a number (1-9 stored as 1-9) at a specific position in the board
 __host__ __device__ inline void set_number_at_pos(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint8_t pos, uint8_t number) {
     uint8_t repr_idx = 17 - (pos >> 3); // end - (pos / 8)
     uint8_t bit_index = 28 - ((pos & 7) << 2); // 28 - (pos % 8) * 4
     repr[repr_idx * num_boards + board_idx] |= (number << bit_index);
 }
 
+// Unsets the number at a specific position
 __host__ __device__ inline void unset_number_at_pos(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint8_t pos) {
     uint8_t repr_idx = 17 - (pos >> 3); // end - (pos / 8)
     uint8_t bit_index = 28 - ((pos & 7) << 2); // 28 - (pos % 8) * 4
     repr[repr_idx * num_boards + board_idx] &= (-1U ^ (15 << bit_index));
 }
 
+// Checks if a position has a set number
 __host__ __device__ inline bool is_set(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint8_t pos) {
     uint8_t repr_idx = 17 - (pos >> 3); // end - (pos / 8)
     uint8_t bit_index = 28 - ((pos & 7) << 2); // 28 - (pos % 8) * 4
     return (repr[repr_idx * num_boards + board_idx] & (15 << bit_index)) > 0;
 }
 
+// Retrieves the number (1-9) at a specific position
 __host__ __device__ inline uint8_t get_number_at_pos(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint8_t pos) {
     uint8_t repr_idx = 17 - (pos >> 3); // end - (pos / 8)
     uint8_t bit_index = 28 - ((pos & 7) << 2); // 28 - (pos % 8) * 4
     return (repr[repr_idx * num_boards + board_idx] >> bit_index) & 15;
 }
 
+// Checks if placing a number at a position is blocked by row, column, or box constraints
 __host__ __device__ inline bool is_blocked(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint8_t pos, uint8_t number) {
     return get_index(repr, num_boards, board_idx, 9 * (pos / 9) + number) ||
         get_index(repr, num_boards, board_idx, 81 + 9 * (pos % 9) + number) ||
         get_index(repr, num_boards, board_idx, 162 + 9 * (((pos % 9) / 3) * 3 + (pos / 27)) + number);
 }
 
+// Sets a number at a position and updates the row, column, and box bitmasks
 __host__ __device__ inline void set(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint8_t pos, uint8_t number) {
     set_index(repr, num_boards, board_idx, 9 * (pos / 9) + number);
     set_index(repr, num_boards, board_idx, 81 + 9 * (pos % 9) + number);
@@ -125,6 +158,7 @@ __host__ __device__ inline void set(uint32_t* repr, uint32_t num_boards, uint32_
     set_number_at_pos(repr, num_boards, board_idx, pos, number + 1);
 }
 
+// Unsets a number at a position and clears the corresponding bitmasks
 __host__ __device__ inline void unset(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint8_t pos, uint8_t number) {
     unset_index(repr, num_boards, board_idx, 9 * (pos / 9) + number);
     unset_index(repr, num_boards, board_idx, 81 + 9 * (pos % 9) + number);
@@ -132,10 +166,12 @@ __host__ __device__ inline void unset(uint32_t* repr, uint32_t num_boards, uint3
     unset_number_at_pos(repr, num_boards, board_idx, pos);
 }
 
+// Retrieves the original board ID stored in the representation
 __host__ __device__ inline uint32_t get_id(uint32_t* repr, uint32_t num_boards, uint32_t board_idx) {
     return repr[18 * num_boards + board_idx];
 }
 
+// Retrieves a 9-bit mask from the bitmask array, handling straddling across uint32_t boundaries
 __device__ uint32_t get_mask(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint16_t base_index) {
     uint8_t repr_idx = base_index >> 5;
     uint8_t bit_index = base_index & 31;
@@ -151,39 +187,80 @@ __device__ uint32_t get_mask(uint32_t* repr, uint32_t num_boards, uint32_t board
     }
 }
 
-const int MAX_LEVELS = 81;
+/**
+ * Device function to perform one pass of singles propagation on a board.
+ * Scans all empty positions, checks available numbers, and sets singles or detects impossibilities.
+ * Updates 'changed' if any setting occurred, and 'impossible' if a position has no options.
+ */
+__device__ void perform_propagation(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, bool* changed, bool* impossible) {
+    *changed = false;
+    for (uint8_t pos = 0; pos < 81; ++pos) {
+        if (is_set(repr, num_boards, board_idx, pos)) continue;
+        uint16_t base_row = 9 * (pos / 9);
+        uint16_t base_col = 81 + 9 * (pos % 9);
+        uint16_t base_box = 162 + 9 * (((pos % 9) / 3) * 3 + (pos / 27));
+        uint32_t row_m = get_mask(repr, num_boards, board_idx, base_row);
+        uint32_t col_m = get_mask(repr, num_boards, board_idx, base_col);
+        uint32_t box_m = get_mask(repr, num_boards, board_idx, base_box);
+        uint32_t used = row_m | col_m | box_m;
+        uint32_t avail = ~used & 0x1FF;
+        int count = __popc(avail);
+        if (count == 0) {
+            *impossible = true;
+            return;
+        }
+        else if (count == 1) {
+            uint32_t bit = __ffs(avail) - 1;
+            set(repr, num_boards, board_idx, pos, bit);
+            *changed = true;
+        }
+    }
+}
 
-// Kernel 1: Find Next Cell (MRV), return next_pos and number of boards to be generated
+/**
+ * Device function to find the position with the Minimum Remaining Values (MRV).
+ * Scans all positions to find the unset one with the fewest possibilities.
+ * Also detects if the board is fully solved.
+ */
+__device__ uint8_t find_mrv_pos(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, int* min_poss, bool* is_solved) {
+    *min_poss = 10;
+    uint8_t best_pos = 0;
+    *is_solved = true;
+    for (uint8_t pos = 0; pos < 81; ++pos) {
+        if (!is_set(repr, num_boards, board_idx, pos)) {
+            *is_solved = false;
+            uint16_t base_row = 9 * (pos / 9);
+            uint16_t base_col = 81 + 9 * (pos % 9);
+            uint16_t base_box = 162 + 9 * (((pos % 9) / 3) * 3 + (pos / 27));
+            uint32_t row_m = get_mask(repr, num_boards, board_idx, base_row);
+            uint32_t col_m = get_mask(repr, num_boards, board_idx, base_col);
+            uint32_t box_m = get_mask(repr, num_boards, board_idx, base_box);
+            uint32_t used = row_m | col_m | box_m;
+            uint32_t avail = ~used & 0x1FF;
+            int count = __popc(avail);
+            if (count < *min_poss) {
+                *min_poss = count;
+                best_pos = pos;
+            }
+        }
+    }
+    return best_pos;
+}
+
+/**
+ * Kernel to find the next cell for each board using MRV heuristic.
+ * Performs singles propagation until no changes or impossibility detected.
+ * Outputs next position (or special codes: 255 for impossible, 200 for solved) and number of children.
+ */
 __global__ void find_next_cell_kernel(uint32_t* d_repr, uint32_t num_boards, uint8_t* d_next_pos, uint32_t* d_num_children_out) {
     uint32_t board_idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (board_idx >= num_boards) return;
 
-    // Propagation of singles
+    // Perform singles propagation in a loop until no more changes
     bool changed = true;
     bool impossible = false;
     while (changed && !impossible) {
-        changed = false;
-        for (uint8_t pos = 0; pos < 81; ++pos) {
-            if (is_set(d_repr, num_boards, board_idx, pos)) continue;
-            uint16_t base_row = 9 * (pos / 9);
-            uint16_t base_col = 81 + 9 * (pos % 9);
-            uint16_t base_box = 162 + 9 * (((pos % 9) / 3) * 3 + (pos / 27));
-            uint32_t row_m = get_mask(d_repr, num_boards, board_idx, base_row);
-            uint32_t col_m = get_mask(d_repr, num_boards, board_idx, base_col);
-            uint32_t box_m = get_mask(d_repr, num_boards, board_idx, base_box);
-            uint32_t used = row_m | col_m | box_m;
-            uint32_t avail = ~used & 0x1FF;
-            int count = __popc(avail);
-            if (count == 0) {
-                impossible = true;
-                break;
-            }
-            else if (count == 1) {
-                uint32_t bit = __ffs(avail) - 1;
-                set(d_repr, num_boards, board_idx, pos, bit);
-                changed = true;
-            }
-        }
+        perform_propagation(d_repr, num_boards, board_idx, &changed, &impossible);
     }
 
     if (impossible) {
@@ -192,36 +269,13 @@ __global__ void find_next_cell_kernel(uint32_t* d_repr, uint32_t num_boards, uin
         return;
     }
 
-    // Now find MRV
-    int min_poss = 10;
-    uint8_t best_pos = 0;
-    bool is_solved = true;
-
-    for (uint8_t pos = 0; pos < 81; ++pos) {
-        if (!is_set(d_repr, num_boards, board_idx, pos)) {
-            is_solved = false;
-            uint16_t base_row = 9 * (pos / 9);
-            uint16_t base_col = 81 + 9 * (pos % 9);
-            uint16_t base_box = 162 + 9 * (((pos % 9) / 3) * 3 + (pos / 27));
-            uint32_t row_m = get_mask(d_repr, num_boards, board_idx, base_row);
-            uint32_t col_m = get_mask(d_repr, num_boards, board_idx, base_col);
-            uint32_t box_m = get_mask(d_repr, num_boards, board_idx, base_box);
-            uint32_t used = row_m | col_m | box_m;
-            uint32_t avail = ~used & 0x1FF;
-            int count = __popc(avail);
-            if (count < min_poss) {
-                min_poss = count;
-                best_pos = pos;
-            }
-        }
-    }
+    // Find the MRV position
+    int min_poss;
+    bool is_solved;
+    uint8_t best_pos = find_mrv_pos(d_repr, num_boards, board_idx, &min_poss, &is_solved);
 
     uint32_t num_children;
-    if (impossible) {
-        d_next_pos[board_idx] = 255;
-        num_children = 0;
-    }
-    else if (is_solved) {
+    if (is_solved) {
         d_next_pos[board_idx] = 200;
         num_children = 1;
     }
@@ -233,7 +287,26 @@ __global__ void find_next_cell_kernel(uint32_t* d_repr, uint32_t num_boards, uin
     d_num_children_out[board_idx] = num_children;
 }
 
-// Kernel 2: Generate Children
+/**
+ * Device function to compute the mask of available numbers for a position.
+ * Combines masks from row, column, and box to find unused numbers (1-9).
+ */
+__device__ uint32_t get_available_mask(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint8_t pos) {
+    uint16_t base_row = 9 * (pos / 9);
+    uint16_t base_col = 81 + 9 * (pos % 9);
+    uint16_t base_box = 162 + 9 * (((pos % 9) / 3) * 3 + (pos / 27));
+    uint32_t row_m = get_mask(repr, num_boards, board_idx, base_row);
+    uint32_t col_m = get_mask(repr, num_boards, board_idx, base_col);
+    uint32_t box_m = get_mask(repr, num_boards, board_idx, base_box);
+    uint32_t used = row_m | col_m | box_m;
+    return ~used & 0x1FF;
+}
+
+/**
+ * Kernel to generate child boards for each input board.
+ * For solved boards, copies as is. For unsolved, creates one child per possible number at the next position.
+ * Uses prefixes to determine output positions.
+ */
 __global__ void generate_children_kernel(uint32_t* d_in_repr, uint32_t in_num_boards, uint8_t* d_next_pos, uint32_t* d_prefixes, uint32_t* d_out_repr, uint32_t out_num_boards) {
     uint32_t board_idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (board_idx >= in_num_boards) return;
@@ -252,28 +325,93 @@ __global__ void generate_children_kernel(uint32_t* d_in_repr, uint32_t in_num_bo
         return;
     }
 
-    // generate children
-    uint16_t base_row = 9 * (pos / 9);
-    uint16_t base_col = 81 + 9 * (pos % 9);
-    uint16_t base_box = 162 + 9 * (((pos % 9) / 3) * 3 + (pos / 27));
-    uint32_t row_m = get_mask(d_in_repr, in_num_boards, board_idx, base_row);
-    uint32_t col_m = get_mask(d_in_repr, in_num_boards, board_idx, base_col);
-    uint32_t box_m = get_mask(d_in_repr, in_num_boards, board_idx, base_box);
-    uint32_t used = row_m | col_m | box_m;
-    uint32_t avail = ~used & 0x1FF;
-    uint32_t out_idx = out_start;
+    // Generate children for unsolved board
+    uint32_t avail = get_available_mask(d_in_repr, in_num_boards, board_idx, pos);
+    uint32_t child_idx = 0;
     while (avail != 0) {
         uint32_t bit = __ffs(avail) - 1;
+        uint32_t out_idx = out_start + child_idx;
         for (uint8_t field = 0; field < 19; ++field) {
             d_out_repr[field * out_num_boards + out_idx] = d_in_repr[field * in_num_boards + board_idx];
         }
         set(d_out_repr, out_num_boards, out_idx, pos, bit);
         avail &= ~(1u << bit);
-        ++out_idx;
+        ++child_idx;
     }
 }
 
-// Main function
+const int MAX_LEVELS = 81;
+
+/**
+ * Computes the total number of new boards (sum of children) using Thrust reduce.
+ */
+uint32_t compute_new_num_boards(uint32_t* d_num_children_out, uint32_t num_boards, cudaStream_t stream) {
+    return thrust::reduce(thrust::cuda::par.on(stream),
+        thrust::device_ptr<uint32_t>(d_num_children_out),
+        thrust::device_ptr<uint32_t>(d_num_children_out + num_boards),
+        0u);
+}
+
+/**
+ * Counts the number of unsolved boards using Thrust count_if.
+ */
+uint32_t count_unsolved(uint8_t* d_next_pos, uint32_t num_boards, cudaStream_t stream) {
+    return thrust::count_if(thrust::cuda::par.on(stream),
+        thrust::device_ptr<uint8_t>(d_next_pos),
+        thrust::device_ptr<uint8_t>(d_next_pos + num_boards),
+        [] __device__(uint8_t pos) { return pos < 200; });
+}
+
+/**
+ * Computes exclusive scan prefixes for child offsets using Thrust.
+ */
+void compute_prefixes(uint32_t* d_num_children_out, uint32_t* d_prefixes, uint32_t num_boards, cudaStream_t stream) {
+    thrust::exclusive_scan(thrust::cuda::par.on(stream),
+        thrust::device_ptr<uint32_t>(d_num_children_out),
+        thrust::device_ptr<uint32_t>(d_num_children_out + num_boards),
+        thrust::device_ptr<uint32_t>(d_prefixes));
+}
+
+/**
+ * Ensures the output buffer is large enough; reallocates if necessary.
+ */
+void ensure_buffer_size(uint32_t** output_repr, uint32_t* output_max, uint32_t new_num) {
+    if (new_num > *output_max) {
+        checkCudaError(cudaFree(*output_repr), "cudaFree failed for output_repr (overflow)");
+        size_t new_bytes = 19ULL * new_num * sizeof(uint32_t);
+        checkCudaError(cudaMalloc(output_repr, new_bytes), "cudaMalloc failed for output_repr (overflow)");
+        *output_max = new_num;
+    }
+}
+
+/**
+ * Extracts solutions from the final host representations.
+ * Maps back to original puzzle IDs and constructs 81-element arrays with numbers 1-9.
+ */
+std::vector<std::array<uint8_t, 81>> extract_solutions(uint32_t* h_repr, uint32_t final_num_boards, uint32_t original_num) {
+    std::vector<std::array<uint8_t, 81>> solutions(original_num);
+    std::vector<bool> found(original_num, false);
+
+    for (uint32_t board_idx = 0; board_idx < final_num_boards; ++board_idx) {
+        uint32_t id = get_id(h_repr, final_num_boards, board_idx);
+        if (id >= original_num || found[id]) continue;
+
+        auto& sol = solutions[id];
+        for (uint8_t pos = 0; pos < 81; ++pos) {
+            uint8_t num = get_number_at_pos(h_repr, final_num_boards, board_idx, pos) - 1;
+            sol[pos] = num + 1;
+        }
+        found[id] = true;
+    }
+
+    return solutions;
+}
+
+/**
+ * Solves multiple Sudoku puzzles using GPU-accelerated backtracking.
+ * Uses two buffers for input/output swapping across levels.
+ * Returns the solutions as vectors of 81-element arrays.
+ */
 std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards* current) {
     cudaStream_t stream;
     cudaError_t err = cudaStreamCreate(&stream);
@@ -301,10 +439,12 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards* current
     uint32_t output_max = MAX_PREALLOC_BOARDS;
     uint32_t num_boards = original_num;
 
-    for (int loop = 0; loop < MAX_LEVELS; ++loop) {
-        std::cout << "Loop " << loop << ", Boards: " << num_boards << std::endl;
+    // Process levels until all solved or no boards left
+    for (int level = 0; level < MAX_LEVELS; ++level) {
+        std::cout << "Level " << level << ", Boards: " << num_boards << std::endl;
         if (num_boards == 0) break;
 
+        // Allocate temporary device arrays for next positions and child counts
         uint8_t* d_next_pos = nullptr;
         err = cudaMalloc(&d_next_pos, num_boards * sizeof(uint8_t));
         checkCudaError(err, "cudaMalloc failed for d_next_pos");
@@ -313,17 +453,15 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards* current
         err = cudaMalloc(&d_num_children_out, num_boards * sizeof(uint32_t));
         checkCudaError(err, "cudaMalloc failed for d_num_children_out");
 
+        // Launch kernel to find next cells
         int threads = 256;
         int blocks = (num_boards + threads - 1) / threads;
         find_next_cell_kernel << <blocks, threads, 0, stream >> > (input_repr, num_boards, d_next_pos, d_num_children_out);
         checkCudaError(cudaGetLastError(), "find_next_cell_kernel launch failed");
         checkCudaError(cudaStreamSynchronize(stream), "cudaStreamSynchronize failed after find_next_cell_kernel");
 
-        // Compute new_num using Thrust reduce on device
-        uint32_t new_num = thrust::reduce(thrust::cuda::par.on(stream),
-            thrust::device_ptr<uint32_t>(d_num_children_out),
-            thrust::device_ptr<uint32_t>(d_num_children_out + num_boards),
-            0u);
+        // Compute total new boards
+        uint32_t new_num = compute_new_num_boards(d_num_children_out, num_boards, stream);
         checkCudaError(cudaStreamSynchronize(stream), "cudaStreamSynchronize failed after thrust::reduce");
 
         if (new_num == 0) {
@@ -332,42 +470,34 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards* current
             break;
         }
 
-        // Compute unsolved_count using Thrust count_if
-        uint32_t unsolved_count = thrust::count_if(thrust::cuda::par.on(stream),
-            thrust::device_ptr<uint8_t>(d_next_pos),
-            thrust::device_ptr<uint8_t>(d_next_pos + num_boards),
-            [] __device__(uint8_t pos) { return pos < 200; });
+        // Count unsolved boards
+        uint32_t unsolved_count = count_unsolved(d_next_pos, num_boards, stream);
         checkCudaError(cudaStreamSynchronize(stream), "cudaStreamSynchronize failed after thrust::count_if");
 
         bool all_solved = (unsolved_count == 0);
 
+        // Allocate and compute prefixes for output positions
         uint32_t* d_prefixes = nullptr;
         err = cudaMalloc(&d_prefixes, num_boards * sizeof(uint32_t));
         checkCudaError(err, "cudaMalloc failed for d_prefixes");
 
-        thrust::exclusive_scan(thrust::cuda::par.on(stream),
-            thrust::device_ptr<uint32_t>(d_num_children_out),
-            thrust::device_ptr<uint32_t>(d_num_children_out + num_boards),
-            thrust::device_ptr<uint32_t>(d_prefixes));
+        compute_prefixes(d_num_children_out, d_prefixes, num_boards, stream);
         checkCudaError(cudaStreamSynchronize(stream), "cudaStreamSynchronize failed after thrust::exclusive_scan");
 
-        // Handle output buffer, reallocate if overflow
-        if (new_num > output_max) {
-            checkCudaError(cudaFree(output_repr), "cudaFree failed for output_repr (overflow)");
-            size_t new_bytes = 19ULL * new_num * sizeof(uint32_t);
-            checkCudaError(cudaMalloc(&output_repr, new_bytes), "cudaMalloc failed for output_repr (overflow)");
-            output_max = new_num;
-        }
+        // Ensure output buffer is large enough
+        ensure_buffer_size(&output_repr, &output_max, new_num);
 
+        // Launch kernel to generate children
         generate_children_kernel << <blocks, threads, 0, stream >> > (input_repr, num_boards, d_next_pos, d_prefixes, output_repr, new_num);
         checkCudaError(cudaGetLastError(), "generate_children_kernel launch failed");
         checkCudaError(cudaStreamSynchronize(stream), "cudaStreamSynchronize failed after generate_children_kernel");
 
+        // Free temporary arrays
         checkCudaError(cudaFree(d_next_pos), "cudaFree failed for d_next_pos");
         checkCudaError(cudaFree(d_num_children_out), "cudaFree failed for d_num_children_out");
         checkCudaError(cudaFree(d_prefixes), "cudaFree failed for d_prefixes");
 
-        // Swap input and output
+        // Swap input and output buffers for next level
         std::swap(input_repr, output_repr);
         std::swap(input_max, output_max);
         num_boards = new_num;
@@ -388,24 +518,12 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards* current
     checkCudaError(err, "cudaMemcpyAsync failed for final h_repr");
     checkCudaError(cudaStreamSynchronize(stream), "cudaStreamSynchronize failed after final cudaMemcpyAsync");
 
-    std::vector<std::array<uint8_t, 81>> solutions(original_num);
-    std::vector<bool> found(original_num, false);
-
-    for (uint32_t board_idx = 0; board_idx < final_num_boards; ++board_idx) {
-        uint32_t id = get_id(h_repr, final_num_boards, board_idx);
-        if (id >= original_num || found[id]) continue;
-
-        auto& sol = solutions[id];
-        for (uint8_t pos = 0; pos < 81; ++pos) {
-            uint8_t num = get_number_at_pos(h_repr, final_num_boards, board_idx, pos) - 1;
-            sol[pos] = num + 1;
-        }
-        found[id] = true;
-    }
+    // Extract solutions from host data
+    auto solutions = extract_solutions(h_repr, final_num_boards, original_num);
 
     free(h_repr);
 
-    // Final cleanup
+    // Clean up final buffers and stream
     checkCudaError(cudaFree(input_repr), "cudaFree failed for final input_repr");
     checkCudaError(cudaFree(output_repr), "cudaFree failed for final output_repr");
     checkCudaError(cudaStreamDestroy(stream), "cudaStreamDestroy failed");
@@ -413,16 +531,16 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards* current
     return solutions;
 }
 
-void solveGPU(const std::string& input_file, const std::string& output_file, int count) {
+/**
+ * Reads Sudoku puzzles from the input file, validates them, and prepares representations.
+ * Reads up to 'count' valid puzzles.
+ */
+std::vector<std::vector<uint32_t>> read_puzzles(const std::string& input_file, int count) {
     std::ifstream file(input_file);
     if (!file.is_open()) {
         std::cerr << "Failed to open file: " << input_file << std::endl;
-        return;
+        return {};
     }
-
-    cudaStream_t stream;
-    cudaError_t err = cudaStreamCreate(&stream);
-    checkCudaError(err, "cudaStreamCreate failed in solveGPU");
 
     std::string line;
     std::vector<std::vector<uint32_t>> temp_reprs;
@@ -453,17 +571,17 @@ void solveGPU(const std::string& input_file, const std::string& output_file, int
         }
     }
     file.close();
+    return temp_reprs;
+}
 
+/**
+ * Prepares the host array for board representations, including IDs.
+ */
+uint32_t* prepare_host_repr(const std::vector<std::vector<uint32_t>>& temp_reprs) {
     uint32_t num_boards = temp_reprs.size();
-    if (num_boards == 0) {
-        checkCudaError(cudaStreamDestroy(stream), "cudaStreamDestroy failed in solveGPU (early exit)");
-        return;
-    }
-
     uint32_t* h_repr = new uint32_t[19ULL * num_boards]();
     if (h_repr == nullptr) {
         fprintf(stderr, "new failed for h_repr\n");
-        checkCudaError(cudaStreamDestroy(stream), "cudaStreamDestroy failed in solveGPU (after new failure)");
         exit(1);
     }
     for (uint32_t b = 0; b < num_boards; ++b) {
@@ -472,11 +590,66 @@ void solveGPU(const std::string& input_file, const std::string& output_file, int
         }
         h_repr[18 * num_boards + b] = b;
     }
+    return h_repr;
+}
+
+/**
+ * Writes the solved puzzles to the output file.
+ * Outputs "No solution" for unsolved puzzles.
+ */
+void write_solutions(const std::string& output_file, const std::vector<std::array<uint8_t, 81>>& solutions) {
+    std::ofstream out(output_file);
+    if (!out.is_open()) {
+        std::cerr << "Failed to open output file: " << output_file << std::endl;
+        return;
+    }
+    for (const auto& solution : solutions) {
+        bool is_valid_solution = true;
+        for (uint8_t pos = 0; pos < 81; ++pos) {
+            if (solution[pos] == 0) {
+                is_valid_solution = false;
+                break;
+            }
+        }
+        if (!is_valid_solution) {
+            out << "No solution" << std::endl;
+            continue;
+        }
+        for (uint8_t pos = 0; pos < 81; ++pos) {
+            uint8_t num = solution[pos];
+            out << static_cast<char>('0' + num);
+        }
+        out << std::endl;
+    }
+    out.close();
+}
+
+/**
+ * Main entry point to solve Sudoku puzzles from file using GPU.
+ * Reads input, prepares data, solves, times the solving process, and writes output.
+ */
+void solveGPU(const std::string& input_file, const std::string& output_file, int count) {
+    cudaStream_t stream;
+    cudaError_t err = cudaStreamCreate(&stream);
+    checkCudaError(err, "cudaStreamCreate failed in solveGPU");
+
+    // Read and validate puzzles
+    auto temp_reprs = read_puzzles(input_file, count);
+    if (temp_reprs.empty()) {
+        checkCudaError(cudaStreamDestroy(stream), "cudaStreamDestroy failed in solveGPU (early exit)");
+        return;
+    }
+
+    uint32_t num_boards = temp_reprs.size();
+
+    // Prepare host representation array
+    uint32_t* h_repr = prepare_host_repr(temp_reprs);
     temp_reprs.clear();
 
-    // Start timing after reading
+    // Start timing after reading and preparation
     auto start = std::chrono::high_resolution_clock::now();
 
+    // Copy to device and solve
     SudokuBoards* inputs_ptr = new SudokuBoards(num_boards);
     size_t bytes = 19ULL * num_boards * sizeof(uint32_t);
     err = cudaMemcpyAsync(inputs_ptr->repr, h_repr, bytes, cudaMemcpyHostToDevice, stream);
@@ -493,29 +666,6 @@ void solveGPU(const std::string& input_file, const std::string& output_file, int
 
     checkCudaError(cudaStreamDestroy(stream), "cudaStreamDestroy failed in solveGPU");
 
-    std::ofstream out(output_file);
-    if (!out.is_open()) {
-        std::cerr << "Failed to open output file: " << output_file << std::endl;
-        return;
-    }
-    for (const auto& solution : solutions) {
-        bool is_valid_solution = true;
-        for (uint8_t pos = 0; pos < 81; ++pos) {
-            uint8_t num = solution[pos];
-            if (num == 0) {
-                is_valid_solution = false;
-                break;
-            }
-        }
-        if (!is_valid_solution) {
-            out << "No solution" << std::endl;
-            continue;
-        }
-        for (uint8_t pos = 0; pos < 81; ++pos) {
-            uint8_t num = solution[pos];
-            out << static_cast<char>('0' + num);
-        }
-        out << std::endl;
-    }
-    out.close();
+    // Write solutions to file
+    write_solutions(output_file, solutions);
 }
