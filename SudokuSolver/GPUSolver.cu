@@ -285,9 +285,9 @@ std::vector<std::array<uint8_t, 81>> solve_multiple_sudoku(SudokuBoards* current
 
     uint32_t original_num = current->get_num_boards();
 
-    for (int level = 0; level < MAX_LEVELS; ++level) {
+    for (int loop = 0; loop < MAX_LEVELS; ++loop) {
         uint32_t num_boards = current->get_num_boards();
-        std::cout << "Level " << level << ", Boards: " << num_boards << std::endl;
+        std::cout << "Loop " << loop << ", Boards: " << num_boards << std::endl;
         if (num_boards == 0) break;
 
         uint8_t* d_next_pos = nullptr;
