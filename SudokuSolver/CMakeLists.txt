@@ -11,5 +11,5 @@ set_target_properties(sudoku PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 # Enable warnings for C++ and CUDA
 target_compile_options(sudoku PRIVATE
     $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra -Wpedantic>
-    $<$<COMPILE_LANGUAGE:CUDA>:-Wno-deprecated-gpu-targets --expt-extended-lambda -Xcompiler=-Wall,-Wextra,-Wpedantic --Wreorder --Wdefault-stream-launch --Wext-lambda-captures-this>
+    $<$<COMPILE_LANGUAGE:CUDA>:-Wno-deprecated-gpu-targets --expt-extended-lambda -Xcompiler=-Wall,-Wextra --Wreorder --Wdefault-stream-launch --Wext-lambda-captures-this>
 )
