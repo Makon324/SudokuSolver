@@ -19,16 +19,6 @@
 #include <thrust/count.h>
 #include <thrust/system/cuda/execution_policy.h>
 
-#ifdef __INTELLISENSE__
-#include <intrin.h>
-int __popc(unsigned int x) { return __popcnt(x); }
-int __ffs(unsigned int x) {
-    unsigned long index;
-    if (x == 0) return 0;
-    _BitScanForward(&index, x);
-    return index + 1;
-}
-#endif
 
 void checkCudaError(cudaError_t err, const char* msg) {
     if (err != cudaSuccess) {
