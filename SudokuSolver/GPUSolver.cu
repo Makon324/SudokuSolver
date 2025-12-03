@@ -472,41 +472,9 @@ std::vector<std::array<uint8_t, BOARD_SIZE>> extract_solutions(uint32_t* h_repr,
     return solutions;
 }
 
-void print_boards(uint32_t* repr, uint32_t num_boards) {
-    if (num_boards == 0) return;
-
-    size_t size = static_cast<size_t>(FIELDS_PER_BOARD) * num_boards * sizeof(uint32_t);
-    uint32_t* h_repr = (uint32_t*)malloc(size);
-    if (h_repr == nullptr) {
-        std::cerr << "malloc failed for h_repr in print_boards" << std::endl;
-        return;
-    }
-
-    cudaError_t err = cudaMemcpy(h_repr, repr, size, cudaMemcpyDeviceToHost);
-    if (err != cudaSuccess) {
-        std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaMemcpy failed in print_boards" << std::endl;
-        free(h_repr);
-        return;
-    }
-
-    const uint32_t max_print = 3;
-    for (uint32_t b = 0; b < std::min(num_boards, max_print); ++b) {
-        std::cout << "Board " << b << " ID: " << get_id(h_repr, num_boards, b) << " ";
-        for (uint32_t pos = 0; pos < BOARD_SIZE; pos++) {
-			std::cout << (int)get_number_at_pos(h_repr, num_boards, b, pos);
-        }
-		std::cout << std::endl;
-    }
-    if (num_boards > max_print) {
-        std::cout << "And " << num_boards - max_print << " more boards..." << std::endl;
-    }
-
-    free(h_repr);
-}
-
 void single_loop_iteration(uint32_t*& input_repr, uint32_t*& output_repr, uint32_t& output_max, uint32_t& input_max, cudaStream_t& stream, uint32_t& num_boards) {
     std::cout << "Loop, Boards: " << num_boards << std::endl;
-    print_boards(input_repr, num_boards);
+
     if (num_boards == 0) return;
 
     // Allocate temporary device arrays for next positions and child counts
@@ -569,8 +537,6 @@ void single_loop_iteration(uint32_t*& input_repr, uint32_t*& output_repr, uint32
         exit(1);
     }
 
-    std::cout << "New boards to generate: " << new_num << std::endl;
-
     if (new_num == 0) {
         num_boards = 0;
         cudaFree(d_next_pos);
@@ -592,9 +558,6 @@ void single_loop_iteration(uint32_t*& input_repr, uint32_t*& output_repr, uint32
     }
 
     bool all_solved = (unsolved_count == 0);
-
-    std::cout << "After count:" << std::endl;
-    print_boards(input_repr, num_boards);
 
     // Allocate and compute prefixes for output positions
     uint32_t* d_prefixes = nullptr;
@@ -678,10 +641,6 @@ void single_loop_iteration(uint32_t*& input_repr, uint32_t*& output_repr, uint32
         cudaStreamDestroy(stream);
         exit(1);
     }
-
-    std::cout << "After generate children:" << std::endl;
-    print_boards(output_repr, new_num);
-    std::cout << std::endl;
 
     // Swap input and output buffers for next level
     std::swap(input_repr, output_repr);
