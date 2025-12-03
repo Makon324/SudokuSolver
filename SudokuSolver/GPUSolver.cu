@@ -175,14 +175,14 @@ __host__ __device__ inline uint8_t get_number_at_pos(uint32_t* repr, uint32_t nu
 __host__ __device__ inline bool is_blocked(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint8_t pos, uint8_t number) {
     return get_index(repr, num_boards, board_idx, ROW_MASK_BASE + GRID_SIZE * (pos / GRID_SIZE) + number) ||
         get_index(repr, num_boards, board_idx, COL_MASK_BASE + GRID_SIZE * (pos % GRID_SIZE) + number) ||
-        get_index(repr, num_boards, board_idx, BOX_MASK_BASE + GRID_SIZE * (((pos % GRID_SIZE) / SUBGRID_SIZE) * SUBGRID_SIZE + (pos / (GRID_SIZE * SUBGRID_SIZE))) + number);
+        get_index(repr, num_boards, board_idx, BOX_MASK_BASE + GRID_SIZE * (((pos / GRID_SIZE) / SUBGRID_SIZE) * SUBGRID_SIZE + ((pos % GRID_SIZE) / SUBGRID_SIZE)) + number)
 }
 
 // Sets a number at a position and updates the row, column, and box bitmasks
 __host__ __device__ inline void set(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint8_t pos, uint8_t number) {
     set_index(repr, num_boards, board_idx, ROW_MASK_BASE + GRID_SIZE * (pos / GRID_SIZE) + number);
     set_index(repr, num_boards, board_idx, COL_MASK_BASE + GRID_SIZE * (pos % GRID_SIZE) + number);
-    set_index(repr, num_boards, board_idx, BOX_MASK_BASE + GRID_SIZE * (((pos % GRID_SIZE) / SUBGRID_SIZE) * SUBGRID_SIZE + (pos / (GRID_SIZE * SUBGRID_SIZE))) + number);
+    set_index(repr, num_boards, board_idx, BOX_MASK_BASE + GRID_SIZE * (((pos / GRID_SIZE) / SUBGRID_SIZE) * SUBGRID_SIZE + ((pos % GRID_SIZE) / SUBGRID_SIZE)) + number);
     set_number_at_pos(repr, num_boards, board_idx, pos, number + 1);
 }
 
@@ -190,7 +190,7 @@ __host__ __device__ inline void set(uint32_t* repr, uint32_t num_boards, uint32_
 __host__ __device__ inline void unset(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint8_t pos, uint8_t number) {
     unset_index(repr, num_boards, board_idx, ROW_MASK_BASE + GRID_SIZE * (pos / GRID_SIZE) + number);
     unset_index(repr, num_boards, board_idx, COL_MASK_BASE + GRID_SIZE * (pos % GRID_SIZE) + number);
-    unset_index(repr, num_boards, board_idx, BOX_MASK_BASE + GRID_SIZE * (((pos % GRID_SIZE) / SUBGRID_SIZE) * SUBGRID_SIZE + (pos / (GRID_SIZE * SUBGRID_SIZE))) + number);
+    unset_index(repr, num_boards, board_idx, BOX_MASK_BASE + GRID_SIZE * (((pos / GRID_SIZE) / SUBGRID_SIZE) * SUBGRID_SIZE + ((pos % GRID_SIZE) / SUBGRID_SIZE)) + number);
     unset_number_at_pos(repr, num_boards, board_idx, pos);
 }
 
@@ -353,7 +353,7 @@ __global__ void find_next_cell_kernel(uint32_t* d_repr, uint32_t num_boards, uin
 __device__ inline uint32_t get_available_mask(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint8_t pos) {
     uint16_t base_row = ROW_MASK_BASE + GRID_SIZE * (pos / GRID_SIZE);
     uint16_t base_col = COL_MASK_BASE + GRID_SIZE * (pos % GRID_SIZE);
-    uint16_t base_box = BOX_MASK_BASE + GRID_SIZE * (((pos % GRID_SIZE) / SUBGRID_SIZE) * SUBGRID_SIZE + (pos / (GRID_SIZE * SUBGRID_SIZE)));
+    uint16_t base_box = BOX_MASK_BASE + GRID_SIZE * (((pos / GRID_SIZE) / SUBGRID_SIZE) * SUBGRID_SIZE + ((pos % GRID_SIZE) / SUBGRID_SIZE));
     uint32_t row_m = get_mask(repr, num_boards, board_idx, base_row);
     uint32_t col_m = get_mask(repr, num_boards, board_idx, base_col);
     uint32_t box_m = get_mask(repr, num_boards, board_idx, base_box);
