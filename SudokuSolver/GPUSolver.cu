@@ -229,6 +229,11 @@ __device__ inline uint32_t get_mask(uint32_t* repr, uint32_t num_boards, uint32_
  * Performs singles propagation until no changes or impossibility detected.
  * Outputs next position (or special codes: IMPOSSIBLE_CODE for impossible, SOLVED_CODE for solved) and number of children.
  */
+ /**
+  * Kernel to find the next cell for each board using MRV heuristic.
+  * Performs singles propagation until no changes or impossibility detected.
+  * Outputs next position (or special codes: IMPOSSIBLE_CODE for impossible, SOLVED_CODE for solved) and number of children.
+  */
 __global__ void find_next_cell_kernel(uint32_t* d_repr, uint32_t num_boards, uint8_t* d_next_pos, uint32_t* d_num_children_out) {
     uint32_t board_idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (board_idx >= num_boards) return;
@@ -248,7 +253,7 @@ __global__ void find_next_cell_kernel(uint32_t* d_repr, uint32_t num_boards, uin
             is_solved = false;
             uint16_t base_row = ROW_MASK_BASE + GRID_SIZE * (pos / GRID_SIZE);
             uint16_t base_col = COL_MASK_BASE + GRID_SIZE * (pos % GRID_SIZE);
-            uint16_t base_box = BOX_MASK_BASE + GRID_SIZE * (((pos % GRID_SIZE) / SUBGRID_SIZE) * SUBGRID_SIZE + (pos / (GRID_SIZE * SUBGRID_SIZE)));
+            uint16_t base_box = BOX_MASK_BASE + GRID_SIZE * (((pos / GRID_SIZE) / SUBGRID_SIZE) * SUBGRID_SIZE + ((pos % GRID_SIZE) / SUBGRID_SIZE));
             uint32_t row_m = get_mask(d_repr, num_boards, board_idx, base_row);
             uint32_t col_m = get_mask(d_repr, num_boards, board_idx, base_col);
             uint32_t box_m = get_mask(d_repr, num_boards, board_idx, base_box);
