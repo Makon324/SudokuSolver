@@ -590,6 +590,9 @@ void single_loop_iteration(uint32_t* input_repr, uint32_t* output_repr, uint32_t
 
     bool all_solved = (unsolved_count == 0);
 
+	std::cout << "After count:" << std::endl;
+	print_boards(input_repr, num_boards);
+
     // Allocate and compute prefixes for output positions
     uint32_t* d_prefixes = nullptr;
     err = cudaMalloc(&d_prefixes, num_boards * sizeof(uint32_t));
@@ -672,6 +675,10 @@ void single_loop_iteration(uint32_t* input_repr, uint32_t* output_repr, uint32_t
         cudaStreamDestroy(stream);
         exit(1);
     }
+
+	std::cout << "After generate children:" << std::endl;
+	print_boards(output_repr, new_num);
+    std::cout << std::endl;
 
     // Swap input and output buffers for next level
     std::swap(input_repr, output_repr);
