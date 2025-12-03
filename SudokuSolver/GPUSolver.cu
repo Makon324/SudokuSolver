@@ -272,37 +272,50 @@ __global__ void find_next_cell_kernel(uint32_t* d_repr, uint32_t num_boards, uin
             }
         }
 
+        if (impossible || !changed) continue;  // Skip hidden if no more naked or impossible
+
         // === HIDDEN SINGLES PASS ===
-        for (int group = 0; group < 27; ++group) {  // 9 rows + 9 cols + 9 boxes
-            int base = (group < 9) ? ROW_MASK_BASE + group * 9 :
-                (group < 18) ? COL_MASK_BASE + (group - 9) * 9 :
-                BOX_MASK_BASE + (group - 18) * 9;
+        for (int group_type = 0; group_type < 3; ++group_type) {  // 0: rows, 1: cols, 2: boxes
+            for (int g = 0; g < 9; ++g) {  // Group index 0-8
+                for (int num = 0; num < 9; ++num) {  // Number 0-8 (for 1-9)
+                    // Compute base for this number in this group
+                    uint16_t group_base;
+                    if (group_type == 0) group_base = ROW_MASK_BASE + g * GRID_SIZE + num;
+                    else if (group_type == 1) group_base = COL_MASK_BASE + g * GRID_SIZE + num;
+                    else group_base = BOX_MASK_BASE + g * GRID_SIZE + num;
 
-            for (int num = 0; num < 9; ++num) {
-                uint32_t mask = get_mask(d_repr, num_boards, board_idx, base + num);
+                    // Skip if number already used/placed in this group
+                    if (get_index(d_repr, num_boards, board_idx, group_base)) continue;
 
-                if (__popc(mask) == 1) {  // This number appears in exactly ONE cell in the group
-                    int bit = __ffs(mask) - 1;
-                    int pos;
+                    // Count possible cells for this num in the group
+                    int count = 0;
+                    int candidate_pos = -1;
+                    for (int cell = 0; cell < 9; ++cell) {
+                        uint8_t pos;
+                        if (group_type == 0) {  // Row
+                            pos = g * 9 + cell;
+                        }
+                        else if (group_type == 1) {  // Column
+                            pos = cell * 9 + g;
+                        }
+                        else {  // Box
+                            int box_row = g / 3;
+                            int box_col = g % 3;
+                            int row_in_box = cell / 3;
+                            int col_in_box = cell % 3;
+                            pos = (box_row * 3 + row_in_box) * 9 + (box_col * 3 + col_in_box);
+                        }
 
-                    if (group < 9) { // row
-                        pos = group * 9 + bit;
+                        // Check if empty and not blocked (note: group used already checked false)
+                        if (!is_set(d_repr, num_boards, board_idx, pos) && !is_blocked(d_repr, num_boards, board_idx, pos, num)) {
+                            count++;
+                            candidate_pos = pos;
+                            if (count > 1) break;  // Early stop if >1
+                        }
                     }
-                    else if (group < 18) { // col
-                        pos = (bit / 3) * 27 + (bit % 3) + (group - 9);
-                        pos = bit % 9 + (group - 9) * 9;
-                    }
 
-                    // Correct position calculation:
-                    if (group < 9)       pos = group * 9 + bit;                              // row
-                    else if (group < 18) pos = bit * 9 + (group - 9);                        // column
-                    else {                                                                   // box
-                        int box = group - 18;
-                        pos = ((box / 3) * 27) + ((bit / 3) * 9) + ((box % 3) * 3) + (bit % 3);
-                    }
-
-                    if (!is_set(d_repr, num_boards, board_idx, pos)) {
-                        set(d_repr, num_boards, board_idx, pos, num);
+                    if (count == 1) {
+                        set(d_repr, num_boards, board_idx, candidate_pos, num);
                         changed = true;
                     }
                 }
