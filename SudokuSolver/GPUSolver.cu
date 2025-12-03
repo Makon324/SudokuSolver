@@ -53,7 +53,7 @@ const uint32_t MAX_PREALLOC_BOARDS = 1 << 20; // 1048576
  */
 void checkCudaError(cudaError_t err, const char* msg) {
     if (err != cudaSuccess) {
-        fprintf(stderr, "%s: %s\n", msg, cudaGetErrorString(err));
+        std::cerr << msg << ": " << cudaGetErrorString(err) << std::endl;
         exit(1);
     }
 }
@@ -466,9 +466,9 @@ std::vector<std::array<uint8_t, BOARD_SIZE>> solve_multiple_sudoku(SudokuBoards*
     uint32_t output_max = MAX_PREALLOC_BOARDS;
     uint32_t num_boards = original_num;
 
-    // Process levels until all solved or no boards left
-    for (int level = 0; level < MAX_SOLVE_LEVELS; ++level) {
-        std::cout << "Level " << level << ", Boards: " << num_boards << std::endl;
+    // Process until all solved or no boards left
+    for (int loop = 0; loop < MAX_SOLVE_LEVELS; ++loop) {
+        std::cout << "Loop " << loop << ", Boards: " << num_boards << std::endl;
         if (num_boards == 0) break;
 
         // Allocate temporary device arrays for next positions and child counts
@@ -538,7 +538,7 @@ std::vector<std::array<uint8_t, BOARD_SIZE>> solve_multiple_sudoku(SudokuBoards*
     size_t bytes = static_cast<size_t>(FIELDS_PER_BOARD) * final_num_boards * sizeof(uint32_t);
     uint32_t* h_repr = (uint32_t*)malloc(bytes);
     if (h_repr == nullptr) {
-        fprintf(stderr, "malloc failed for h_repr\n");
+        std::cerr << "malloc failed for h_repr" << std::endl;
         exit(1);
     }
     err = cudaMemcpyAsync(h_repr, input_repr, bytes, cudaMemcpyDeviceToHost, stream);
@@ -608,7 +608,7 @@ uint32_t* prepare_host_repr(const std::vector<std::vector<uint32_t>>& temp_reprs
     uint32_t num_boards = temp_reprs.size();
     uint32_t* h_repr = new uint32_t[static_cast<size_t>(FIELDS_PER_BOARD) * num_boards]();
     if (h_repr == nullptr) {
-        fprintf(stderr, "new failed for h_repr\n");
+        std::cerr << "new failed for h_repr" << std::endl;
         exit(1);
     }
     for (uint32_t b = 0; b < num_boards; ++b) {
