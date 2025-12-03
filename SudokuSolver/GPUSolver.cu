@@ -271,6 +271,42 @@ __global__ void find_next_cell_kernel(uint32_t* d_repr, uint32_t num_boards, uin
                 }
             }
         }
+
+        // === HIDDEN SINGLES PASS ===
+        for (int group = 0; group < 27; ++group) {  // 9 rows + 9 cols + 9 boxes
+            int base = (group < 9) ? ROW_MASK_BASE + group * 9 :
+                (group < 18) ? COL_MASK_BASE + (group - 9) * 9 :
+                BOX_MASK_BASE + (group - 18) * 9;
+
+            for (int num = 0; num < 9; ++num) {
+                uint32_t mask = get_mask(d_repr, num_boards, board_idx, base + num);
+
+                if (__popc(mask) == 1) {  // This number appears in exactly ONE cell in the group
+                    int bit = __ffs(mask) - 1;
+                    int pos;
+
+                    if (group < 9) { // row
+                        pos = group * 9 + bit;
+                    }
+                    else if (group < 18) { // col
+                        pos = (bit / 3) * 27 + (bit % 3) + (group - 9);
+                        // Better: precompute or use math
+                        pos = bit % 9 + (group - 9) * 9;
+                        wait — simpler :
+                    }
+
+                    // Correct position calculation:
+                    if (group < 9)      pos = group * 9 + bit;                           // row
+                    else if (group < 18) pos = (group - 9) + bit * 9;                     // col
+                    else                pos = ((group - 18) / 3) * 27 + ((group - 18) % 3) * 3 + (bit / 3) * 9 + (bit % 3);
+
+                    if (!is_set(d_repr, num_boards, board_idx, pos)) {
+                        set(d_repr, num_boards, board_idx, pos, num);
+                        changed = true;
+                    }
+                }
+            }
+        }
     }
 
     if (impossible) {
