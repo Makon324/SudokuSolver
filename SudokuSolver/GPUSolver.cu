@@ -277,7 +277,7 @@ __global__ void find_next_cell_kernel(uint32_t* d_repr, uint32_t num_boards, uin
             }
         }
 
-        if (impossible || !changed) continue;  // Skip hidden if no more naked or impossible
+        if (impossible) break;  // Skip hidden if impossible
 
         // === HIDDEN SINGLES PASS ===
         for (int group_type = 0; group_type < 3; ++group_type) {  // 0: rows, 1: cols, 2: boxes
