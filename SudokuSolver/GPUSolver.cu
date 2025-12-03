@@ -20,6 +20,7 @@
 #include <thrust/system/cuda/execution_policy.h>
 #pragma GCC diagnostic pop
 
+
 // Constants for Sudoku dimensions and representation
 constexpr int GRID_SIZE = 9;
 constexpr int BOARD_SIZE = GRID_SIZE * GRID_SIZE; // 81
