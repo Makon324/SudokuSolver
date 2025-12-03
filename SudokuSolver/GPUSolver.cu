@@ -472,8 +472,29 @@ std::vector<std::array<uint8_t, BOARD_SIZE>> extract_solutions(uint32_t* h_repr,
     return solutions;
 }
 
+void print_boards(uint32_t* repr, uint32_t num_boards) {
+    for (uint32_t b = 0; b < num_boards; ++b) {
+        std::cout << "Board " << b << " (ID " << get_id(repr, num_boards, b) << "):" << std::endl;
+        for (uint8_t r = 0; r < GRID_SIZE; ++r) {
+            for (uint8_t c = 0; c < GRID_SIZE; ++c) {
+                uint8_t pos = r * GRID_SIZE + c;
+                if (is_set(repr, num_boards, b, pos)) {
+                    uint8_t num = get_number_at_pos(repr, num_boards, b, pos);
+                    std::cout << static_cast<int>(num) << " ";
+                }
+                else {
+                    std::cout << ". ";
+                }
+            }
+            std::cout << std::endl;
+        }
+        std::cout << std::endl;
+    }
+}
+
 void single_loop_iteration(uint32_t* input_repr, uint32_t* output_repr, uint32_t output_max, uint32_t input_max, cudaStream_t& stream, uint32_t& num_boards){	
     std::cout << "Loop, Boards: " << num_boards << std::endl;
+	print_boards(input_repr, num_boards);
     if (num_boards == 0) return;
 
     // Allocate temporary device arrays for next positions and child counts
