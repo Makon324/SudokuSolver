@@ -122,6 +122,31 @@ const uint8_t SudokuBoard::box_id[81] = {
 
 const int MAX_LEVELS = 81;
 
+uint8_t find_next_pos(SudokuBoard& board) {
+    int current_best = 10;
+    uint8_t best_pos = -1;
+    bool is_solved = true;
+    for (uint8_t i = 0; i < 81; i++) {
+        if (!board.is_set(i)) {
+            is_solved = false;
+            int num_possible = 0;
+            for (uint8_t num = 0; num < 9; num++) {
+                if (!board.is_blocked(i, num)) {
+                    num_possible++;
+                }
+            }
+            if (num_possible < current_best) {
+                current_best = num_possible;
+                best_pos = i;
+            }
+        }
+    }
+    if (is_solved) {
+        return 200;
+    }
+    return current_best != 10 ? best_pos : 255;
+}
+
 // Small structure that represents one search state on the stack
 struct SearchNode {
     SudokuBoard board;
