@@ -569,6 +569,8 @@ void single_loop_iteration(uint32_t* input_repr, uint32_t* output_repr, uint32_t
         exit(1);
     }
 
+	std::cout << "New boards to generate: " << new_num << std::endl;
+
     if (new_num == 0) {
         cudaFree(d_next_pos);
         cudaFree(d_num_children_out);
