@@ -199,10 +199,19 @@ __host__ __device__ inline uint32_t get_id(uint32_t* repr, uint32_t num_boards, 
     return repr[ID_FIELD * num_boards + board_idx];
 }
 
-// Retrieves a BITS_PER_GROUP-bit mask from the bitmask array, handling straddling across uint32_t boundaries
+/**
+ * Retrieves a 9-bit mask (BITS_PER_GROUP bits) representing the used numbers (1-9) in a specific Sudoku group
+ * (row, column, or 3x3 box) from the compact bit-packed representation of multiple Sudoku boards.
+ *
+ * The mask is extracted starting from the specified base_index in the logical bit array formed by the
+ * board's mask fields in 'repr'. Each bit in the returned mask corresponds to a number: bit 0 for 1,
+ * bit 1 for 2, ..., bit 8 for 9. If a bit is set (1), the number is used in the group.
+ *
+ * Handles cases where the 9 bits straddle two adjacent uint32_t fields by fetching and combining bits from both.
+ */
 __device__ inline uint32_t get_mask(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint16_t base_index) {
-    uint8_t repr_idx = base_index >> 5;
-    uint8_t bit_index = base_index & 31;
+	uint8_t repr_idx = base_index >> 5;  // base_index / 32
+	uint8_t bit_index = base_index & 31;  // base_index % 32
     uint32_t val1 = repr[repr_idx * num_boards + board_idx];
     if (bit_index <= (32 - BITS_PER_GROUP)) {
         return (val1 >> bit_index) & MASK_GROUP;
