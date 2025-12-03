@@ -473,23 +473,45 @@ std::vector<std::array<uint8_t, BOARD_SIZE>> extract_solutions(uint32_t* h_repr,
 }
 
 void print_boards(uint32_t* repr, uint32_t num_boards) {
-    for (uint32_t b = 0; b < num_boards; ++b) {
-        std::cout << "Board " << b << " (ID " << get_id(repr, num_boards, b) << "):" << std::endl;
-        for (uint8_t r = 0; r < GRID_SIZE; ++r) {
-            for (uint8_t c = 0; c < GRID_SIZE; ++c) {
-                uint8_t pos = r * GRID_SIZE + c;
-                if (is_set(repr, num_boards, b, pos)) {
-                    uint8_t num = get_number_at_pos(repr, num_boards, b, pos);
-                    std::cout << static_cast<int>(num) << " ";
+    if (num_boards == 0) return;
+
+    size_t size = static_cast<size_t>(FIELDS_PER_BOARD) * num_boards * sizeof(uint32_t);
+    uint32_t* h_repr = (uint32_t*)malloc(size);
+    if (h_repr == nullptr) {
+        std::cerr << "malloc failed for h_repr in print_boards" << std::endl;
+        return;
+    }
+
+    cudaError_t err = cudaMemcpy(h_repr, repr, size, cudaMemcpyDeviceToHost);
+    if (err != cudaSuccess) {
+        std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaMemcpy failed in print_boards" << std::endl;
+        free(h_repr);
+        return;
+    }
+
+    const uint32_t max_print = 3;
+    for (uint32_t b = 0; b < std::min(num_boards, max_print); ++b) {
+        std::cout << "Board " << b << " ID: " << get_id(h_repr, num_boards, b) << std::endl;
+        for (int row = 0; row < GRID_SIZE; ++row) {
+            for (int col = 0; col < GRID_SIZE; ++col) {
+                uint8_t pos = row * GRID_SIZE + col;
+                uint8_t val = get_number_at_pos(h_repr, num_boards, b, pos);
+                if (val == 0) {
+                    std::cout << ".";
                 }
                 else {
-                    std::cout << ". ";
+                    std::cout << static_cast<int>(val);
                 }
             }
             std::cout << std::endl;
         }
         std::cout << std::endl;
     }
+    if (num_boards > max_print) {
+        std::cout << "And " << num_boards - max_print << " more boards..." << std::endl;
+    }
+
+    free(h_repr);
 }
 
 void single_loop_iteration(uint32_t* input_repr, uint32_t* output_repr, uint32_t output_max, uint32_t input_max, cudaStream_t& stream, uint32_t& num_boards){	
