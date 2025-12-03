@@ -492,7 +492,7 @@ void print_boards(uint32_t* repr, uint32_t num_boards) {
     const uint32_t max_print = 3;
     for (uint32_t b = 0; b < std::min(num_boards, max_print); ++b) {
         std::cout << "Board " << b << " ID: " << get_id(h_repr, num_boards, b) << " ";
-        for (uint32_t pos; pos < BOARD_SIZE; pos++) {
+        for (uint32_t pos = 0; pos < BOARD_SIZE; pos++) {
 			std::cout << (int)get_number_at_pos(h_repr, num_boards, b, pos);
         }
 		std::cout << std::endl;
