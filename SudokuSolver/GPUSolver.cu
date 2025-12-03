@@ -417,6 +417,184 @@ std::vector<std::array<uint8_t, BOARD_SIZE>> extract_solutions(uint32_t* h_repr,
     return solutions;
 }
 
+void single_loop_iteration(uint32_t* input_repr, uint32_t* output_repr, uint32_t output_max, uint32_t input_max, cudaStream_t& stream){
+    std::cout << "Loop, Boards: " << num_boards << std::endl;
+    if (num_boards == 0) return;
+
+    // Allocate temporary device arrays for next positions and child counts
+    uint8_t* d_next_pos = nullptr;
+    err = cudaMalloc(&d_next_pos, num_boards * sizeof(uint8_t));
+    if (err != cudaSuccess) {
+        std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaMalloc failed for d_next_pos" << std::endl;
+        cudaFree(input_repr);
+        cudaFree(output_repr);
+        cudaStreamDestroy(stream);
+        exit(1);
+    }
+
+    uint32_t* d_num_children_out = nullptr;
+    err = cudaMalloc(&d_num_children_out, num_boards * sizeof(uint32_t));
+    if (err != cudaSuccess) {
+        std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaMalloc failed for d_num_children_out" << std::endl;
+        cudaFree(d_next_pos);
+        cudaFree(input_repr);
+        cudaFree(output_repr);
+        cudaStreamDestroy(stream);
+        exit(1);
+    }
+
+    // Launch kernel to find next cells
+    int threads = THREADS_PER_BLOCK;
+    int blocks = (num_boards + threads - 1) / threads;
+    find_next_cell_kernel << <blocks, threads, 0, stream >> > (input_repr, num_boards, d_next_pos, d_num_children_out);
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - find_next_cell_kernel launch failed" << std::endl;
+        cudaFree(d_num_children_out);
+        cudaFree(d_next_pos);
+        cudaFree(input_repr);
+        cudaFree(output_repr);
+        cudaStreamDestroy(stream);
+        exit(1);
+    }
+    err = cudaStreamSynchronize(stream);
+    if (err != cudaSuccess) {
+        std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaStreamSynchronize failed after find_next_cell_kernel" << std::endl;
+        cudaFree(d_num_children_out);
+        cudaFree(d_next_pos);
+        cudaFree(input_repr);
+        cudaFree(output_repr);
+        cudaStreamDestroy(stream);
+        exit(1);
+    }
+
+    // Compute total new boards
+    uint32_t new_num = compute_new_num_boards(d_num_children_out, num_boards, stream);
+    err = cudaStreamSynchronize(stream);
+    if (err != cudaSuccess) {
+        std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaStreamSynchronize failed after thrust::reduce" << std::endl;
+        cudaFree(d_num_children_out);
+        cudaFree(d_next_pos);
+        cudaFree(input_repr);
+        cudaFree(output_repr);
+        cudaStreamDestroy(stream);
+        exit(1);
+    }
+
+    if (new_num == 0) {
+        cudaFree(d_next_pos);
+        cudaFree(d_num_children_out);
+        return;
+    }
+
+    // Count unsolved boards
+    uint32_t unsolved_count = count_unsolved(d_next_pos, num_boards, stream);
+    err = cudaStreamSynchronize(stream);
+    if (err != cudaSuccess) {
+        std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaStreamSynchronize failed after thrust::count_if" << std::endl;
+        cudaFree(d_num_children_out);
+        cudaFree(d_next_pos);
+        cudaFree(input_repr);
+        cudaFree(output_repr);
+        cudaStreamDestroy(stream);
+        exit(1);
+    }
+
+    bool all_solved = (unsolved_count == 0);
+
+    // Allocate and compute prefixes for output positions
+    uint32_t* d_prefixes = nullptr;
+    err = cudaMalloc(&d_prefixes, num_boards * sizeof(uint32_t));
+    if (err != cudaSuccess) {
+        std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaMalloc failed for d_prefixes" << std::endl;
+        cudaFree(d_num_children_out);
+        cudaFree(d_next_pos);
+        cudaFree(input_repr);
+        cudaFree(output_repr);
+        cudaStreamDestroy(stream);
+        exit(1);
+    }
+
+    compute_prefixes(d_num_children_out, d_prefixes, num_boards, stream);
+    err = cudaStreamSynchronize(stream);
+    if (err != cudaSuccess) {
+        std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaStreamSynchronize failed after thrust::exclusive_scan" << std::endl;
+        cudaFree(d_prefixes);
+        cudaFree(d_num_children_out);
+        cudaFree(d_next_pos);
+        cudaFree(input_repr);
+        cudaFree(output_repr);
+        cudaStreamDestroy(stream);
+        exit(1);
+    }
+
+    // Ensure output buffer is large enough
+    ensure_buffer_size(&output_repr, &output_max, new_num);
+
+    // Launch kernel to generate children
+    generate_children_kernel << <blocks, threads, 0, stream >> > (input_repr, num_boards, d_next_pos, d_prefixes, output_repr, new_num);
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - generate_children_kernel launch failed" << std::endl;
+        cudaFree(d_prefixes);
+        cudaFree(d_num_children_out);
+        cudaFree(d_next_pos);
+        cudaFree(input_repr);
+        cudaFree(output_repr);
+        cudaStreamDestroy(stream);
+        exit(1);
+    }
+    err = cudaStreamSynchronize(stream);
+    if (err != cudaSuccess) {
+        std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaStreamSynchronize failed after generate_children_kernel" << std::endl;
+        cudaFree(d_prefixes);
+        cudaFree(d_num_children_out);
+        cudaFree(d_next_pos);
+        cudaFree(input_repr);
+        cudaFree(output_repr);
+        cudaStreamDestroy(stream);
+        exit(1);
+    }
+
+    // Free temporary arrays
+    err = cudaFree(d_next_pos);
+    if (err != cudaSuccess) {
+        std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaFree failed for d_next_pos" << std::endl;
+        cudaFree(d_prefixes);
+        cudaFree(d_num_children_out);
+        cudaFree(input_repr);
+        cudaFree(output_repr);
+        cudaStreamDestroy(stream);
+        exit(1);
+    }
+    err = cudaFree(d_num_children_out);
+    if (err != cudaSuccess) {
+        std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaFree failed for d_num_children_out" << std::endl;
+        cudaFree(d_prefixes);
+        cudaFree(input_repr);
+        cudaFree(output_repr);
+        cudaStreamDestroy(stream);
+        exit(1);
+    }
+    err = cudaFree(d_prefixes);
+    if (err != cudaSuccess) {
+        std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaFree failed for d_prefixes" << std::endl;
+        cudaFree(input_repr);
+        cudaFree(output_repr);
+        cudaStreamDestroy(stream);
+        exit(1);
+    }
+
+    // Swap input and output buffers for next level
+    std::swap(input_repr, output_repr);
+    std::swap(input_max, output_max);
+    num_boards = new_num;
+
+    if (all_solved) {
+        return;
+    }
+}
+
 /**
  * Solves multiple Sudoku puzzles using GPU-accelerated backtracking.
  * Uses two buffers for input/output swapping across levels.
@@ -472,183 +650,11 @@ std::vector<std::array<uint8_t, BOARD_SIZE>> solve_multiple_sudoku(SudokuBoards*
     uint32_t output_max = MAX_PREALLOC_BOARDS;
     uint32_t num_boards = original_num;
 
+
+
     // Process until all solved or no boards left
     for (int loop = 0; loop < MAX_SOLVE_LEVELS; ++loop) {
-        std::cout << "Loop " << loop << ", Boards: " << num_boards << std::endl;
-        if (num_boards == 0) break;
-
-        // Allocate temporary device arrays for next positions and child counts
-        uint8_t* d_next_pos = nullptr;
-        err = cudaMalloc(&d_next_pos, num_boards * sizeof(uint8_t));
-        if (err != cudaSuccess) {
-            std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaMalloc failed for d_next_pos" << std::endl;
-            cudaFree(input_repr);
-            cudaFree(output_repr);
-            cudaStreamDestroy(stream);
-            exit(1);
-        }
-
-        uint32_t* d_num_children_out = nullptr;
-        err = cudaMalloc(&d_num_children_out, num_boards * sizeof(uint32_t));
-        if (err != cudaSuccess) {
-            std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaMalloc failed for d_num_children_out" << std::endl;
-            cudaFree(d_next_pos);
-            cudaFree(input_repr);
-            cudaFree(output_repr);
-            cudaStreamDestroy(stream);
-            exit(1);
-        }
-
-        // Launch kernel to find next cells
-        int threads = THREADS_PER_BLOCK;
-        int blocks = (num_boards + threads - 1) / threads;
-        find_next_cell_kernel << <blocks, threads, 0, stream >> > (input_repr, num_boards, d_next_pos, d_num_children_out);
-        err = cudaGetLastError();
-        if (err != cudaSuccess) {
-            std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - find_next_cell_kernel launch failed" << std::endl;
-            cudaFree(d_num_children_out);
-            cudaFree(d_next_pos);
-            cudaFree(input_repr);
-            cudaFree(output_repr);
-            cudaStreamDestroy(stream);
-            exit(1);
-        }
-        err = cudaStreamSynchronize(stream);
-        if (err != cudaSuccess) {
-            std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaStreamSynchronize failed after find_next_cell_kernel" << std::endl;
-            cudaFree(d_num_children_out);
-            cudaFree(d_next_pos);
-            cudaFree(input_repr);
-            cudaFree(output_repr);
-            cudaStreamDestroy(stream);
-            exit(1);
-        }
-
-        // Compute total new boards
-        uint32_t new_num = compute_new_num_boards(d_num_children_out, num_boards, stream);
-        err = cudaStreamSynchronize(stream);
-        if (err != cudaSuccess) {
-            std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaStreamSynchronize failed after thrust::reduce" << std::endl;
-            cudaFree(d_num_children_out);
-            cudaFree(d_next_pos);
-            cudaFree(input_repr);
-            cudaFree(output_repr);
-            cudaStreamDestroy(stream);
-            exit(1);
-        }
-
-        if (new_num == 0) {
-            cudaFree(d_next_pos);
-            cudaFree(d_num_children_out);
-            break;
-        }
-
-        // Count unsolved boards
-        uint32_t unsolved_count = count_unsolved(d_next_pos, num_boards, stream);
-        err = cudaStreamSynchronize(stream);
-        if (err != cudaSuccess) {
-            std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaStreamSynchronize failed after thrust::count_if" << std::endl;
-            cudaFree(d_num_children_out);
-            cudaFree(d_next_pos);
-            cudaFree(input_repr);
-            cudaFree(output_repr);
-            cudaStreamDestroy(stream);
-            exit(1);
-        }
-
-        bool all_solved = (unsolved_count == 0);
-
-        // Allocate and compute prefixes for output positions
-        uint32_t* d_prefixes = nullptr;
-        err = cudaMalloc(&d_prefixes, num_boards * sizeof(uint32_t));
-        if (err != cudaSuccess) {
-            std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaMalloc failed for d_prefixes" << std::endl;
-            cudaFree(d_num_children_out);
-            cudaFree(d_next_pos);
-            cudaFree(input_repr);
-            cudaFree(output_repr);
-            cudaStreamDestroy(stream);
-            exit(1);
-        }
-
-        compute_prefixes(d_num_children_out, d_prefixes, num_boards, stream);
-        err = cudaStreamSynchronize(stream);
-        if (err != cudaSuccess) {
-            std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaStreamSynchronize failed after thrust::exclusive_scan" << std::endl;
-            cudaFree(d_prefixes);
-            cudaFree(d_num_children_out);
-            cudaFree(d_next_pos);
-            cudaFree(input_repr);
-            cudaFree(output_repr);
-            cudaStreamDestroy(stream);
-            exit(1);
-        }
-
-        // Ensure output buffer is large enough
-        ensure_buffer_size(&output_repr, &output_max, new_num);
-
-        // Launch kernel to generate children
-        generate_children_kernel << <blocks, threads, 0, stream >> > (input_repr, num_boards, d_next_pos, d_prefixes, output_repr, new_num);
-        err = cudaGetLastError();
-        if (err != cudaSuccess) {
-            std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - generate_children_kernel launch failed" << std::endl;
-            cudaFree(d_prefixes);
-            cudaFree(d_num_children_out);
-            cudaFree(d_next_pos);
-            cudaFree(input_repr);
-            cudaFree(output_repr);
-            cudaStreamDestroy(stream);
-            exit(1);
-        }
-        err = cudaStreamSynchronize(stream);
-        if (err != cudaSuccess) {
-            std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaStreamSynchronize failed after generate_children_kernel" << std::endl;
-            cudaFree(d_prefixes);
-            cudaFree(d_num_children_out);
-            cudaFree(d_next_pos);
-            cudaFree(input_repr);
-            cudaFree(output_repr);
-            cudaStreamDestroy(stream);
-            exit(1);
-        }
-
-        // Free temporary arrays
-        err = cudaFree(d_next_pos);
-        if (err != cudaSuccess) {
-            std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaFree failed for d_next_pos" << std::endl;
-            cudaFree(d_prefixes);
-            cudaFree(d_num_children_out);
-            cudaFree(input_repr);
-            cudaFree(output_repr);
-            cudaStreamDestroy(stream);
-            exit(1);
-        }
-        err = cudaFree(d_num_children_out);
-        if (err != cudaSuccess) {
-            std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaFree failed for d_num_children_out" << std::endl;
-            cudaFree(d_prefixes);
-            cudaFree(input_repr);
-            cudaFree(output_repr);
-            cudaStreamDestroy(stream);
-            exit(1);
-        }
-        err = cudaFree(d_prefixes);
-        if (err != cudaSuccess) {
-            std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaFree failed for d_prefixes" << std::endl;
-            cudaFree(input_repr);
-            cudaFree(output_repr);
-            cudaStreamDestroy(stream);
-            exit(1);
-        }
-
-        // Swap input and output buffers for next level
-        std::swap(input_repr, output_repr);
-        std::swap(input_max, output_max);
-        num_boards = new_num;
-
-        if (all_solved) {
-            break;
-        }
+		single_loop_iteration(input_repr, output_repr, output_max, input_max, stream);
     }
 
     uint32_t final_num_boards = num_boards;
