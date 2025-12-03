@@ -8,8 +8,8 @@ set(CMAKE_CUDA_ARCHITECTURES 35)
 add_executable(sudoku main.cpp CPUSolver.cpp GPUSolver.cu)
 set_target_properties(sudoku PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 
-# Enable warnings for C++ and CUDA
+# Enable warnings for C++ and CUDA, with suppression for -Wreorder in CUDA
 target_compile_options(sudoku PRIVATE
     $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra -Wpedantic>
-    $<$<COMPILE_LANGUAGE:CUDA>:-Wno-deprecated-gpu-targets --expt-extended-lambda -Xcompiler=-Wall,-Wextra --Wreorder --Wdefault-stream-launch --Wext-lambda-captures-this>
+    $<$<COMPILE_LANGUAGE:CUDA>:-Wno-deprecated-gpu-targets --expt-extended-lambda -Xcompiler=-Wall,-Wextra,-Wno-reorder --Wdefault-stream-launch --Wext-lambda-captures-this>
 )
