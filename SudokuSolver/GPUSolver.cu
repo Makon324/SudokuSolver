@@ -42,7 +42,7 @@ constexpr uint8_t SOLVED_CODE = 200;
 constexpr uint8_t IMPOSSIBLE_CODE = 255;
 constexpr int MAX_SOLVE_LEVELS = BOARD_SIZE;
 constexpr int THREADS_PER_BLOCK = 256;
-const uint32_t MAX_PREALLOC_BOARDS = 1 << 20; // 1048576
+constexpr uint32_t MAX_PREALLOC_BOARDS = 1 << 20; // 1048576
 
 
 
@@ -200,7 +200,7 @@ __host__ __device__ inline uint32_t get_id(uint32_t* repr, uint32_t num_boards, 
 }
 
 // Retrieves a BITS_PER_GROUP-bit mask from the bitmask array, handling straddling across uint32_t boundaries
-__device__ uint32_t get_mask(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint16_t base_index) {
+__device__ inline uint32_t get_mask(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint16_t base_index) {
     uint8_t repr_idx = base_index >> 5;
     uint8_t bit_index = base_index & 31;
     uint32_t val1 = repr[repr_idx * num_boards + board_idx];
@@ -286,7 +286,7 @@ __global__ void find_next_cell_kernel(uint32_t* d_repr, uint32_t num_boards, uin
  * Device function to compute the mask of available numbers for a position.
  * Combines masks from row, column, and box to find unused numbers (1-9).
  */
-__device__ uint32_t get_available_mask(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint8_t pos) {
+__device__ inline uint32_t get_available_mask(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint8_t pos) {
     uint16_t base_row = ROW_MASK_BASE + GRID_SIZE * (pos / GRID_SIZE);
     uint16_t base_col = COL_MASK_BASE + GRID_SIZE * (pos % GRID_SIZE);
     uint16_t base_box = BOX_MASK_BASE + GRID_SIZE * (((pos % GRID_SIZE) / SUBGRID_SIZE) * SUBGRID_SIZE + (pos / (GRID_SIZE * SUBGRID_SIZE)));
