@@ -216,66 +216,6 @@ __device__ uint32_t get_mask(uint32_t* repr, uint32_t num_boards, uint32_t board
 }
 
 /**
- * Device function to perform one pass of singles propagation on a board.
- * Scans all empty positions, checks available numbers, and sets singles or detects impossibilities.
- * Updates 'changed' if any setting occurred, and 'impossible' if a position has no options.
- */
-__device__ void perform_propagation(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, bool* changed, bool* impossible) {
-    *changed = false;
-    for (uint8_t pos = 0; pos < BOARD_SIZE; ++pos) {
-        if (is_set(repr, num_boards, board_idx, pos)) continue;
-        uint16_t base_row = ROW_MASK_BASE + GRID_SIZE * (pos / GRID_SIZE);
-        uint16_t base_col = COL_MASK_BASE + GRID_SIZE * (pos % GRID_SIZE);
-        uint16_t base_box = BOX_MASK_BASE + GRID_SIZE * (((pos % GRID_SIZE) / SUBGRID_SIZE) * SUBGRID_SIZE + (pos / (GRID_SIZE * SUBGRID_SIZE)));
-        uint32_t row_m = get_mask(repr, num_boards, board_idx, base_row);
-        uint32_t col_m = get_mask(repr, num_boards, board_idx, base_col);
-        uint32_t box_m = get_mask(repr, num_boards, board_idx, base_box);
-        uint32_t used = row_m | col_m | box_m;
-        uint32_t avail = ~used & MASK_GROUP;
-        int count = __popc(avail);
-        if (count == 0) {
-            *impossible = true;
-            return;
-        }
-        else if (count == 1) {
-            uint32_t bit = __ffs(avail) - 1;
-            set(repr, num_boards, board_idx, pos, bit);
-            *changed = true;
-        }
-    }
-}
-
-/**
- * Device function to find the position with the Minimum Remaining Values (MRV).
- * Scans all positions to find the unset one with the fewest possibilities.
- * Also detects if the board is fully solved.
- */
-__device__ uint8_t find_mrv_pos(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, int* min_poss, bool* is_solved) {
-    *min_poss = GRID_SIZE + 1;
-    uint8_t best_pos = 0;
-    *is_solved = true;
-    for (uint8_t pos = 0; pos < BOARD_SIZE; ++pos) {
-        if (!is_set(repr, num_boards, board_idx, pos)) {
-            *is_solved = false;
-            uint16_t base_row = ROW_MASK_BASE + GRID_SIZE * (pos / GRID_SIZE);
-            uint16_t base_col = COL_MASK_BASE + GRID_SIZE * (pos % GRID_SIZE);
-            uint16_t base_box = BOX_MASK_BASE + GRID_SIZE * (((pos % GRID_SIZE) / SUBGRID_SIZE) * SUBGRID_SIZE + (pos / (GRID_SIZE * SUBGRID_SIZE)));
-            uint32_t row_m = get_mask(repr, num_boards, board_idx, base_row);
-            uint32_t col_m = get_mask(repr, num_boards, board_idx, base_col);
-            uint32_t box_m = get_mask(repr, num_boards, board_idx, base_box);
-            uint32_t used = row_m | col_m | box_m;
-            uint32_t avail = ~used & MASK_GROUP;
-            int count = __popc(avail);
-            if (count < *min_poss) {
-                *min_poss = count;
-                best_pos = pos;
-            }
-        }
-    }
-    return best_pos;
-}
-
-/**
  * Kernel to find the next cell for each board using MRV heuristic.
  * Performs singles propagation until no changes or impossibility detected.
  * Outputs next position (or special codes: IMPOSSIBLE_CODE for impossible, SOLVED_CODE for solved) and number of children.
@@ -284,11 +224,44 @@ __global__ void find_next_cell_kernel(uint32_t* d_repr, uint32_t num_boards, uin
     uint32_t board_idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (board_idx >= num_boards) return;
 
-    // Perform singles propagation in a loop until no more changes
     bool changed = true;
     bool impossible = false;
+    int min_poss = GRID_SIZE + 1;
+    uint8_t best_pos = 0;
+    bool is_solved = false;
+
     while (changed && !impossible) {
-        perform_propagation(d_repr, num_boards, board_idx, &changed, &impossible);
+        changed = false;
+        is_solved = true;
+        min_poss = GRID_SIZE + 1;
+        for (uint8_t pos = 0; pos < BOARD_SIZE; ++pos) {
+            if (is_set(d_repr, num_boards, board_idx, pos)) continue;
+            is_solved = false;
+            uint16_t base_row = ROW_MASK_BASE + GRID_SIZE * (pos / GRID_SIZE);
+            uint16_t base_col = COL_MASK_BASE + GRID_SIZE * (pos % GRID_SIZE);
+            uint16_t base_box = BOX_MASK_BASE + GRID_SIZE * (((pos % GRID_SIZE) / SUBGRID_SIZE) * SUBGRID_SIZE + (pos / (GRID_SIZE * SUBGRID_SIZE)));
+            uint32_t row_m = get_mask(d_repr, num_boards, board_idx, base_row);
+            uint32_t col_m = get_mask(d_repr, num_boards, board_idx, base_col);
+            uint32_t box_m = get_mask(d_repr, num_boards, board_idx, base_box);
+            uint32_t used = row_m | col_m | box_m;
+            uint32_t avail = ~used & MASK_GROUP;
+            int count = __popc(avail);
+            if (count == 0) {
+                impossible = true;
+                break;
+            }
+            else if (count == 1) {
+                uint32_t bit = __ffs(avail) - 1;
+                set(d_repr, num_boards, board_idx, pos, bit);
+                changed = true;
+            }
+            else {
+                if (count < min_poss) {
+                    min_poss = count;
+                    best_pos = pos;
+                }
+            }
+        }
     }
 
     if (impossible) {
@@ -296,11 +269,6 @@ __global__ void find_next_cell_kernel(uint32_t* d_repr, uint32_t num_boards, uin
         d_num_children_out[board_idx] = 0;
         return;
     }
-
-    // Find the MRV position
-    int min_poss;
-    bool is_solved;
-    uint8_t best_pos = find_mrv_pos(d_repr, num_boards, board_idx, &min_poss, &is_solved);
 
     uint32_t num_children;
     if (is_solved) {
@@ -311,7 +279,6 @@ __global__ void find_next_cell_kernel(uint32_t* d_repr, uint32_t num_boards, uin
         d_next_pos[board_idx] = best_pos;
         num_children = min_poss;
     }
-
     d_num_children_out[board_idx] = num_children;
 }
 
