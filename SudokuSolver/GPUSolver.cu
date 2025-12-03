@@ -66,12 +66,10 @@ public:
     SudokuBoards(uint32_t n) : num_boards(n), repr(nullptr) {
         size_t bytes = static_cast<size_t>(FIELDS_PER_BOARD) * n * sizeof(uint32_t);
         cudaError_t err = cudaMalloc(&repr, bytes);
-        // Replaced checkCudaError with inline check
         if (err != cudaSuccess) {
             std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaMalloc failed in SudokuBoards constructor" << std::endl;
             exit(1);
         }
-        // No memset here; data will be copied or generated
     }
 
     // Delete copy constructor and assignment to prevent unintended copies
@@ -89,7 +87,6 @@ public:
         if (this != &other) {
             if (repr != nullptr) {
                 cudaError_t err = cudaFree(repr);
-                // Replaced checkCudaError with inline check
                 if (err != cudaSuccess) {
                     std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaFree failed in SudokuBoards move assignment" << std::endl;
                     exit(1);
@@ -109,7 +106,6 @@ public:
     ~SudokuBoards() {
         if (repr != nullptr) {
             cudaError_t err = cudaFree(repr);
-            // Replaced checkCudaError with inline check
             if (err != cudaSuccess) {
                 std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaFree failed in SudokuBoards destructor" << std::endl;
                 exit(1);
@@ -408,14 +404,12 @@ void compute_prefixes(uint32_t* d_num_children_out, uint32_t* d_prefixes, uint32
 void ensure_buffer_size(uint32_t** output_repr, uint32_t* output_max, uint32_t new_num) {
     if (new_num > *output_max) {
         cudaError_t err = cudaFree(*output_repr);
-        // Replaced checkCudaError with inline check
         if (err != cudaSuccess) {
             std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaFree failed for output_repr (overflow)" << std::endl;
             exit(1);
         }
         size_t new_bytes = static_cast<size_t>(FIELDS_PER_BOARD) * new_num * sizeof(uint32_t);
         err = cudaMalloc(output_repr, new_bytes);
-        // Replaced checkCudaError with inline check
         if (err != cudaSuccess) {
             std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaMalloc failed for output_repr (overflow)" << std::endl;
             exit(1);
@@ -455,7 +449,6 @@ std::vector<std::array<uint8_t, BOARD_SIZE>> extract_solutions(uint32_t* h_repr,
 std::vector<std::array<uint8_t, BOARD_SIZE>> solve_multiple_sudoku(SudokuBoards* current) {
     cudaStream_t stream;
     cudaError_t err = cudaStreamCreate(&stream);
-    // Replaced checkCudaError with inline check
     if (err != cudaSuccess) {
         std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaStreamCreate failed in solve_multiple_sudoku" << std::endl;
         delete current;
@@ -468,7 +461,6 @@ std::vector<std::array<uint8_t, BOARD_SIZE>> solve_multiple_sudoku(SudokuBoards*
 
     uint32_t* repr_a = nullptr;
     err = cudaMalloc(&repr_a, prealloc_bytes);
-    // Replaced checkCudaError with inline check
     if (err != cudaSuccess) {
         std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaMalloc failed for repr_a" << std::endl;
         cudaStreamDestroy(stream);
@@ -478,7 +470,6 @@ std::vector<std::array<uint8_t, BOARD_SIZE>> solve_multiple_sudoku(SudokuBoards*
 
     uint32_t* repr_b = nullptr;
     err = cudaMalloc(&repr_b, prealloc_bytes);
-    // Replaced checkCudaError with inline check
     if (err != cudaSuccess) {
         std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaMalloc failed for repr_b" << std::endl;
         cudaFree(repr_a);
@@ -487,10 +478,8 @@ std::vector<std::array<uint8_t, BOARD_SIZE>> solve_multiple_sudoku(SudokuBoards*
         exit(1);
     }
 
-    // Assume original_num <= MAX_PREALLOC_BOARDS; if not, handle similarly by allocating larger
     size_t initial_bytes = static_cast<size_t>(FIELDS_PER_BOARD) * original_num * sizeof(uint32_t);
     err = cudaMemcpy(repr_a, current->repr, initial_bytes, cudaMemcpyDeviceToDevice);
-    // Replaced checkCudaError with inline check
     if (err != cudaSuccess) {
         std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaMemcpy failed for initial copy" << std::endl;
         cudaFree(repr_a);
@@ -515,7 +504,6 @@ std::vector<std::array<uint8_t, BOARD_SIZE>> solve_multiple_sudoku(SudokuBoards*
         // Allocate temporary device arrays for next positions and child counts
         uint8_t* d_next_pos = nullptr;
         err = cudaMalloc(&d_next_pos, num_boards * sizeof(uint8_t));
-        // Replaced checkCudaError with inline check
         if (err != cudaSuccess) {
             std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaMalloc failed for d_next_pos" << std::endl;
             cudaFree(input_repr);
@@ -526,7 +514,6 @@ std::vector<std::array<uint8_t, BOARD_SIZE>> solve_multiple_sudoku(SudokuBoards*
 
         uint32_t* d_num_children_out = nullptr;
         err = cudaMalloc(&d_num_children_out, num_boards * sizeof(uint32_t));
-        // Replaced checkCudaError with inline check
         if (err != cudaSuccess) {
             std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaMalloc failed for d_num_children_out" << std::endl;
             cudaFree(d_next_pos);
@@ -541,7 +528,6 @@ std::vector<std::array<uint8_t, BOARD_SIZE>> solve_multiple_sudoku(SudokuBoards*
         int blocks = (num_boards + threads - 1) / threads;
         find_next_cell_kernel << <blocks, threads, 0, stream >> > (input_repr, num_boards, d_next_pos, d_num_children_out);
         err = cudaGetLastError();
-        // Replaced checkCudaError with inline check
         if (err != cudaSuccess) {
             std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - find_next_cell_kernel launch failed" << std::endl;
             cudaFree(d_num_children_out);
@@ -552,7 +538,6 @@ std::vector<std::array<uint8_t, BOARD_SIZE>> solve_multiple_sudoku(SudokuBoards*
             exit(1);
         }
         err = cudaStreamSynchronize(stream);
-        // Replaced checkCudaError with inline check
         if (err != cudaSuccess) {
             std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaStreamSynchronize failed after find_next_cell_kernel" << std::endl;
             cudaFree(d_num_children_out);
@@ -566,7 +551,6 @@ std::vector<std::array<uint8_t, BOARD_SIZE>> solve_multiple_sudoku(SudokuBoards*
         // Compute total new boards
         uint32_t new_num = compute_new_num_boards(d_num_children_out, num_boards, stream);
         err = cudaStreamSynchronize(stream);
-        // Replaced checkCudaError with inline check
         if (err != cudaSuccess) {
             std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaStreamSynchronize failed after thrust::reduce" << std::endl;
             cudaFree(d_num_children_out);
@@ -586,7 +570,6 @@ std::vector<std::array<uint8_t, BOARD_SIZE>> solve_multiple_sudoku(SudokuBoards*
         // Count unsolved boards
         uint32_t unsolved_count = count_unsolved(d_next_pos, num_boards, stream);
         err = cudaStreamSynchronize(stream);
-        // Replaced checkCudaError with inline check
         if (err != cudaSuccess) {
             std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaStreamSynchronize failed after thrust::count_if" << std::endl;
             cudaFree(d_num_children_out);
@@ -602,7 +585,6 @@ std::vector<std::array<uint8_t, BOARD_SIZE>> solve_multiple_sudoku(SudokuBoards*
         // Allocate and compute prefixes for output positions
         uint32_t* d_prefixes = nullptr;
         err = cudaMalloc(&d_prefixes, num_boards * sizeof(uint32_t));
-        // Replaced checkCudaError with inline check
         if (err != cudaSuccess) {
             std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaMalloc failed for d_prefixes" << std::endl;
             cudaFree(d_num_children_out);
@@ -615,7 +597,6 @@ std::vector<std::array<uint8_t, BOARD_SIZE>> solve_multiple_sudoku(SudokuBoards*
 
         compute_prefixes(d_num_children_out, d_prefixes, num_boards, stream);
         err = cudaStreamSynchronize(stream);
-        // Replaced checkCudaError with inline check
         if (err != cudaSuccess) {
             std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaStreamSynchronize failed after thrust::exclusive_scan" << std::endl;
             cudaFree(d_prefixes);
@@ -633,7 +614,6 @@ std::vector<std::array<uint8_t, BOARD_SIZE>> solve_multiple_sudoku(SudokuBoards*
         // Launch kernel to generate children
         generate_children_kernel << <blocks, threads, 0, stream >> > (input_repr, num_boards, d_next_pos, d_prefixes, output_repr, new_num);
         err = cudaGetLastError();
-        // Replaced checkCudaError with inline check
         if (err != cudaSuccess) {
             std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - generate_children_kernel launch failed" << std::endl;
             cudaFree(d_prefixes);
@@ -645,7 +625,6 @@ std::vector<std::array<uint8_t, BOARD_SIZE>> solve_multiple_sudoku(SudokuBoards*
             exit(1);
         }
         err = cudaStreamSynchronize(stream);
-        // Replaced checkCudaError with inline check
         if (err != cudaSuccess) {
             std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaStreamSynchronize failed after generate_children_kernel" << std::endl;
             cudaFree(d_prefixes);
@@ -659,7 +638,6 @@ std::vector<std::array<uint8_t, BOARD_SIZE>> solve_multiple_sudoku(SudokuBoards*
 
         // Free temporary arrays
         err = cudaFree(d_next_pos);
-        // Replaced checkCudaError with inline check
         if (err != cudaSuccess) {
             std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaFree failed for d_next_pos" << std::endl;
             cudaFree(d_prefixes);
@@ -670,7 +648,6 @@ std::vector<std::array<uint8_t, BOARD_SIZE>> solve_multiple_sudoku(SudokuBoards*
             exit(1);
         }
         err = cudaFree(d_num_children_out);
-        // Replaced checkCudaError with inline check
         if (err != cudaSuccess) {
             std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaFree failed for d_num_children_out" << std::endl;
             cudaFree(d_prefixes);
@@ -680,7 +657,6 @@ std::vector<std::array<uint8_t, BOARD_SIZE>> solve_multiple_sudoku(SudokuBoards*
             exit(1);
         }
         err = cudaFree(d_prefixes);
-        // Replaced checkCudaError with inline check
         if (err != cudaSuccess) {
             std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaFree failed for d_prefixes" << std::endl;
             cudaFree(input_repr);
@@ -710,7 +686,6 @@ std::vector<std::array<uint8_t, BOARD_SIZE>> solve_multiple_sudoku(SudokuBoards*
         exit(1);
     }
     err = cudaMemcpyAsync(h_repr, input_repr, bytes, cudaMemcpyDeviceToHost, stream);
-    // Replaced checkCudaError with inline check
     if (err != cudaSuccess) {
         std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaMemcpyAsync failed for final h_repr" << std::endl;
         free(h_repr);
@@ -720,7 +695,6 @@ std::vector<std::array<uint8_t, BOARD_SIZE>> solve_multiple_sudoku(SudokuBoards*
         exit(1);
     }
     err = cudaStreamSynchronize(stream);
-    // Replaced checkCudaError with inline check
     if (err != cudaSuccess) {
         std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaStreamSynchronize failed after final cudaMemcpyAsync" << std::endl;
         free(h_repr);
@@ -737,7 +711,6 @@ std::vector<std::array<uint8_t, BOARD_SIZE>> solve_multiple_sudoku(SudokuBoards*
 
     // Clean up final buffers and stream
     err = cudaFree(input_repr);
-    // Replaced checkCudaError with inline check
     if (err != cudaSuccess) {
         std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaFree failed for final input_repr" << std::endl;
         cudaFree(output_repr);
@@ -745,14 +718,12 @@ std::vector<std::array<uint8_t, BOARD_SIZE>> solve_multiple_sudoku(SudokuBoards*
         exit(1);
     }
     err = cudaFree(output_repr);
-    // Replaced checkCudaError with inline check
     if (err != cudaSuccess) {
         std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaFree failed for final output_repr" << std::endl;
         cudaStreamDestroy(stream);
         exit(1);
     }
     err = cudaStreamDestroy(stream);
-    // Replaced checkCudaError with inline check
     if (err != cudaSuccess) {
         std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaStreamDestroy failed" << std::endl;
         exit(1);
@@ -861,7 +832,6 @@ void write_solutions(const std::string& output_file, const std::vector<std::arra
 void solveGPU(const std::string& input_file, const std::string& output_file, int count) {
     cudaStream_t stream;
     cudaError_t err = cudaStreamCreate(&stream);
-    // Replaced checkCudaError with inline check
     if (err != cudaSuccess) {
         std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaStreamCreate failed in solveGPU" << std::endl;
         exit(1);
@@ -871,7 +841,6 @@ void solveGPU(const std::string& input_file, const std::string& output_file, int
     auto temp_reprs = read_puzzles(input_file, count);
     if (temp_reprs.empty()) {
         err = cudaStreamDestroy(stream);
-        // Replaced checkCudaError with inline check
         if (err != cudaSuccess) {
             std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaStreamDestroy failed in solveGPU (early exit)" << std::endl;
             exit(1);
@@ -892,7 +861,6 @@ void solveGPU(const std::string& input_file, const std::string& output_file, int
     SudokuBoards* inputs_ptr = new SudokuBoards(num_boards);
     size_t bytes = static_cast<size_t>(FIELDS_PER_BOARD) * num_boards * sizeof(uint32_t);
     err = cudaMemcpyAsync(inputs_ptr->repr, h_repr, bytes, cudaMemcpyHostToDevice, stream);
-    // Replaced checkCudaError with inline check
     if (err != cudaSuccess) {
         std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaMemcpyAsync failed for inputs_ptr" << std::endl;
         cudaStreamDestroy(stream);
@@ -900,7 +868,6 @@ void solveGPU(const std::string& input_file, const std::string& output_file, int
         exit(1);
     }
     err = cudaStreamSynchronize(stream);
-    // Replaced checkCudaError with inline check
     if (err != cudaSuccess) {
         std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaStreamSynchronize failed after cudaMemcpyAsync for inputs_ptr" << std::endl;
         cudaStreamDestroy(stream);
@@ -917,7 +884,6 @@ void solveGPU(const std::string& input_file, const std::string& output_file, int
     std::cout << "Time taken: " << duration.count() << " seconds" << std::endl;
 
     err = cudaStreamDestroy(stream);
-    // Replaced checkCudaError with inline check
     if (err != cudaSuccess) {
         std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaStreamDestroy failed in solveGPU" << std::endl;
         exit(1);
