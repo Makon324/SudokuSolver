@@ -417,13 +417,13 @@ std::vector<std::array<uint8_t, BOARD_SIZE>> extract_solutions(uint32_t* h_repr,
     return solutions;
 }
 
-void single_loop_iteration(uint32_t* input_repr, uint32_t* output_repr, uint32_t output_max, uint32_t input_max, cudaStream_t& stream){
+void single_loop_iteration(uint32_t* input_repr, uint32_t* output_repr, uint32_t output_max, uint32_t input_max, cudaStream_t& stream, uint32_t num_boards){	
     std::cout << "Loop, Boards: " << num_boards << std::endl;
     if (num_boards == 0) return;
 
     // Allocate temporary device arrays for next positions and child counts
     uint8_t* d_next_pos = nullptr;
-    err = cudaMalloc(&d_next_pos, num_boards * sizeof(uint8_t));
+    cudaError_t err = cudaMalloc(&d_next_pos, num_boards * sizeof(uint8_t));
     if (err != cudaSuccess) {
         std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaMalloc failed for d_next_pos" << std::endl;
         cudaFree(input_repr);
@@ -654,7 +654,7 @@ std::vector<std::array<uint8_t, BOARD_SIZE>> solve_multiple_sudoku(SudokuBoards*
 
     // Process until all solved or no boards left
     for (int loop = 0; loop < MAX_SOLVE_LEVELS; ++loop) {
-		single_loop_iteration(input_repr, output_repr, output_max, input_max, stream);
+		single_loop_iteration(input_repr, output_repr, output_max, input_max, stream, num_boards);
     }
 
     uint32_t final_num_boards = num_boards;
