@@ -571,17 +571,15 @@ void single_loop_iteration(uint32_t*& input_repr, uint32_t*& output_repr, uint32
 
     std::cout << "New boards to generate: " << new_num << std::endl;
 
-    // Always update num_boards early
-    num_boards = new_num;
-
     if (new_num == 0) {
+        num_boards = 0;
         cudaFree(d_next_pos);
         cudaFree(d_num_children_out);
         return;
     }
 
     // Count unsolved boards
-    uint32_t unsolved_count = count_unsolved(d_next_pos, new_num, stream);
+    uint32_t unsolved_count = count_unsolved(d_next_pos, num_boards, stream);
     err = cudaStreamSynchronize(stream);
     if (err != cudaSuccess) {
         std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaStreamSynchronize failed after thrust::count_if" << std::endl;
@@ -596,11 +594,11 @@ void single_loop_iteration(uint32_t*& input_repr, uint32_t*& output_repr, uint32
     bool all_solved = (unsolved_count == 0);
 
     std::cout << "After count:" << std::endl;
-    print_boards(input_repr, new_num);
+    print_boards(input_repr, num_boards);
 
     // Allocate and compute prefixes for output positions
     uint32_t* d_prefixes = nullptr;
-    err = cudaMalloc(&d_prefixes, new_num * sizeof(uint32_t));
+    err = cudaMalloc(&d_prefixes, num_boards * sizeof(uint32_t));
     if (err != cudaSuccess) {
         std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaMalloc failed for d_prefixes" << std::endl;
         cudaFree(d_num_children_out);
@@ -611,7 +609,7 @@ void single_loop_iteration(uint32_t*& input_repr, uint32_t*& output_repr, uint32
         exit(1);
     }
 
-    compute_prefixes(d_num_children_out, d_prefixes, new_num, stream);
+    compute_prefixes(d_num_children_out, d_prefixes, num_boards, stream);
     err = cudaStreamSynchronize(stream);
     if (err != cudaSuccess) {
         std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaStreamSynchronize failed after thrust::exclusive_scan" << std::endl;
@@ -628,7 +626,7 @@ void single_loop_iteration(uint32_t*& input_repr, uint32_t*& output_repr, uint32
     ensure_buffer_size(&output_repr, &output_max, new_num);
 
     // Launch kernel to generate children
-    generate_children_kernel << <blocks, threads, 0, stream >> > (input_repr, new_num, d_next_pos, d_prefixes, output_repr, new_num);
+    generate_children_kernel << <blocks, threads, 0, stream >> > (input_repr, num_boards, d_next_pos, d_prefixes, output_repr, new_num);
     err = cudaGetLastError();
     if (err != cudaSuccess) {
         std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - generate_children_kernel launch failed" << std::endl;
@@ -688,6 +686,9 @@ void single_loop_iteration(uint32_t*& input_repr, uint32_t*& output_repr, uint32
     // Swap input and output buffers for next level
     std::swap(input_repr, output_repr);
     std::swap(input_max, output_max);
+
+    // Update num_boards after generation and swap
+    num_boards = new_num;
 
     if (all_solved) {
         return;
