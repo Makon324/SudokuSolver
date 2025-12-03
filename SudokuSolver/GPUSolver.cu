@@ -491,21 +491,11 @@ void print_boards(uint32_t* repr, uint32_t num_boards) {
 
     const uint32_t max_print = 3;
     for (uint32_t b = 0; b < std::min(num_boards, max_print); ++b) {
-        std::cout << "Board " << b << " ID: " << get_id(h_repr, num_boards, b) << std::endl;
-        for (int row = 0; row < GRID_SIZE; ++row) {
-            for (int col = 0; col < GRID_SIZE; ++col) {
-                uint8_t pos = row * GRID_SIZE + col;
-                uint8_t val = get_number_at_pos(h_repr, num_boards, b, pos);
-                if (val == 0) {
-                    std::cout << ".";
-                }
-                else {
-                    std::cout << static_cast<int>(val);
-                }
-            }
-            std::cout << std::endl;
+        std::cout << "Board " << b << " ID: " << get_id(h_repr, num_boards, b) << " ";
+        for (uint32_t pos; pos < BOARD_SIZE; pos++) {
+			std::cout << (int)get_number_at_pos(h_repr, num_boards, b, pos);
         }
-        std::cout << std::endl;
+		std::cout << std::endl;
     }
     if (num_boards > max_print) {
         std::cout << "And " << num_boards - max_print << " more boards..." << std::endl;
