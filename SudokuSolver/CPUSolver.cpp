@@ -122,84 +122,104 @@ const uint8_t SudokuBoard::box_id[81] = {
 
 const int MAX_LEVELS = 81;
 
-uint8_t find_next_pos(SudokuBoard &board){
-    int current_best = 10;
-	uint8_t best_pos = -1;
-    bool is_solved = true;
-    for (uint8_t i = 0; i < 81; i++) {
-        if (!board.is_set(i)) {
-			is_solved = false;
-			int num_possible = 0;
-            for (uint8_t num = 0; num < 9; num++) {
-                if (!board.is_blocked(i, num)) {
-					num_possible++;
-                }
-			}
-            if (num_possible < current_best) {
-                current_best = num_possible;
-                best_pos = i;
-			}
-		}  
-    }
-    if (is_solved) {
-        return 200;
-	}
-	return current_best != 10 ? best_pos : 255;
-}
+// Small structure that represents one search state on the stack
+struct SearchNode {
+    SudokuBoard board;
+    uint8_t pos;      // current position we are trying to fill (0..80), 255 = finished
+};
 
-void generate_boardsCPU(std::vector<SudokuBoard>& boards, int input_size) {
-    std::vector<SudokuBoard> new_boards;
-    std::vector<bool> is_solved(input_size, false);
-    for (auto &board : boards) {
-        if (is_solved[board.id]) {
-            // already solved
-            continue;
-        }
-        uint8_t pos = find_next_pos(board);
-        if (pos == 200) {
-            // solved
-            is_solved[board.id] = true;
-            new_boards.push_back(board);
-            continue;
-        }
-        if (pos == 255) {
-			// impossible
-            continue;
-        }
-        for (uint8_t num = 0; num < 9; num++) {
-            if (!board.is_blocked(pos, num)) {
-                SudokuBoard new_board = board;
-                new_board.set(pos, num);
-                new_boards.push_back(new_board);
+// Solve a single puzzle with classic dancing-links-style backtracking (DFS)
+// but implemented iteratively with std::stack ? pure BFS/DFS without recursion
+bool solve_one_sudoku(SudokuBoard board, std::array<uint8_t, 81>& out_solution)
+{
+    struct StackFrame {
+        uint8_t pos_to_fill;
+        uint8_t candidate;   // next number to try at pos_to_fill (0..9)
+    };
+
+    std::stack<StackFrame> stk;
+    uint8_t current_pos = find_next_pos(board);   // first empty cell with fewest possibilities
+
+    if (current_pos == 200) {                     // already solved
+        for (uint8_t i = 0; i < 81; ++i)
+            out_solution[i] = board.get_number_at_pos(i);
+        return true;
+    }
+    if (current_pos == 255)                       // impossible board
+        return false;
+
+    stk.push({ current_pos, 0 });
+
+    while (!stk.empty()) {
+        StackFrame& frame = stk.top();
+
+        // Try the next candidate at the current position
+        while (frame.candidate < 9) {
+            uint8_t num = frame.candidate++;
+            if (!board.is_blocked(frame.pos_to_fill, num)) {
+                board.set(frame.pos_to_fill, num);
+                uint8_t next_pos = find_next_pos(board);
+
+                if (next_pos == 200) {                // solved!
+                    for (uint8_t i = 0; i < 81; ++i)
+                        out_solution[i] = board.get_number_at_pos(i);
+                    return true;
+                }
+                if (next_pos != 255) {                // valid continuation
+                    stk.push({ next_pos, 0 });
+                    goto next_frame;                  // break out of candidate loop
+                }
+                // invalid branch ? undo and try next candidate
+                board.unset(frame.pos_to_fill, num);
             }
         }
-	}
-	new_boards.shrink_to_fit();
-	new_boards.swap(boards);
+
+        // All candidates exhausted ? backtrack
+        board.unset(frame.pos_to_fill, board.get_number_at_pos(frame.pos_to_fill) - 1);
+        stk.pop();
+
+    next_frame:;
+    }
+
+    return false;   // no solution found
 }
 
-std::vector<std::array<uint8_t, 81>> SolveSudokusCPU(std::vector<SudokuBoard>& boards) {
-	int input_size = boards.size();
-    for (int level = 0; level < MAX_LEVELS; level++) {
-		generate_boardsCPU(boards, input_size);
+// ---------------------------------------------------------------------------
+// New, clean, one-by-one solver
+// ---------------------------------------------------------------------------
+std::vector<std::array<uint8_t, 81>> SolveSudokusCPU(const std::vector<SudokuBoard>& input_boards)
+{
+    const size_t n = input_boards.size();
+    std::vector<std::array<uint8_t, 81>> solutions(n);
+
+    for (size_t i = 0; i < n; ++i) {
+        const SudokuBoard& puzzle = input_boards[i];
+        std::array<uint8_t, 81>& result = solutions[i];
+
+        // Fill with zeros = unsolved / empty
+        result.fill(0);
+
+        // Copy the board because solve_one_sudoku modifies it
+        SudokuBoard board = puzzle;
+
+        // Pre-fill already given clues into the result (they are guaranteed correct)
+        for (uint8_t pos = 0; pos < 81; ++pos) {
+            uint8_t val = board.get_number_at_pos(pos);
+            if (val != 0) {
+                result[pos] = val;
+            }
+        }
+
+        bool solved = solve_one_sudoku(board, result);
+
+        if (!solved) {
+            // Optional: you can leave it zero-filled or mark it specially
+            // Here we keep zeros ? caller can detect unsolved puzzles easily
+            std::cerr << "Puzzle " << i << " has no solution\n";
+        }
     }
 
-	// Retrieve solutions
-    std::vector<std::array<uint8_t, 81>> solutions(input_size);
-	std::vector<bool> solution_found(input_size, false);
-    for (auto &board : boards) {
-		std::array<uint8_t, 81> solution{};
-        if (solution_found[board.id]) {
-            continue;
-        }
-        for (uint8_t pos = 0; pos < 81; pos++) {
-			solution[pos] = board.get_number_at_pos(pos);
-        }
-		solutions[board.id] = solution;
-        solution_found[board.id] = true;
-    }
-
-	return solutions;
+    return solutions;
 }
 
 std::vector<SudokuBoard> read_boardsCPU(const std::string& filename, const int count) {
@@ -271,21 +291,24 @@ void write_solutionsCPU(const std::string& filename, const std::vector<std::arra
     file.close();
 }
 
-void solveCPU(const std::string& input_file, const std::string& output_file, int count) {
+void solveCPU(const std::string& input_file,
+    const std::string& output_file,
+    int count = std::numeric_limits<int>::max())
+{
     std::vector<SudokuBoard> boards = read_boardsCPU(input_file, count);
     if (boards.empty()) {
+        std::cerr << "No valid puzzles read.\n";
         return;
     }
 
-    // Start timing after reading
     auto start = std::chrono::high_resolution_clock::now();
 
     std::vector<std::array<uint8_t, 81>> solutions = SolveSudokusCPU(boards);
 
-    // End timing before writing
     auto end = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> duration = end - start;
-    std::cout << "Time taken: " << duration.count() << " seconds" << std::endl;
+    std::chrono::duration<double> elapsed = end - start;
+    std::cout << "Solved " << boards.size()
+        << " puzzles in " << elapsed.count() << " seconds\n";
 
     write_solutionsCPU(output_file, solutions);
 }

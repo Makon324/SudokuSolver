@@ -472,10 +472,15 @@ std::vector<std::array<uint8_t, BOARD_SIZE>> extract_solutions(uint32_t* h_repr,
     return solutions;
 }
 
-void single_loop_iteration(uint32_t*& input_repr, uint32_t*& output_repr, uint32_t& output_max, uint32_t& input_max, cudaStream_t& stream, uint32_t& num_boards) {
+/**
+ * Performs a single iteration of the solving loop: finds next cells, propagates singles,
+ * generates children for unsolved boards, filters impossibles, and swaps buffers.
+ * Returns true if all boards are solved (or pool empty), false to continue.
+ */
+bool single_loop_iteration(uint32_t*& input_repr, uint32_t*& output_repr, uint32_t& output_max, uint32_t& input_max, cudaStream_t& stream, uint32_t& num_boards) {
     std::cout << "Loop, Boards: " << num_boards << std::endl;
 
-    if (num_boards == 0) return;
+    if (num_boards == 0) return true;
 
     // Allocate temporary device arrays for next positions and child counts
     uint8_t* d_next_pos = nullptr;
@@ -539,9 +544,24 @@ void single_loop_iteration(uint32_t*& input_repr, uint32_t*& output_repr, uint32
 
     if (new_num == 0) {
         num_boards = 0;
-        cudaFree(d_next_pos);
-        cudaFree(d_num_children_out);
-        return;
+        err = cudaFree(d_next_pos);
+        if (err != cudaSuccess) {
+            std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaFree failed for d_next_pos (no boards)" << std::endl;
+            cudaFree(d_num_children_out);
+            cudaFree(input_repr);
+            cudaFree(output_repr);
+            cudaStreamDestroy(stream);
+            exit(1);
+        }
+        err = cudaFree(d_num_children_out);
+        if (err != cudaSuccess) {
+            std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaFree failed for d_num_children_out (no boards)" << std::endl;
+            cudaFree(input_repr);
+            cudaFree(output_repr);
+            cudaStreamDestroy(stream);
+            exit(1);
+        }
+        return true;
     }
 
     // Count unsolved boards
@@ -559,7 +579,29 @@ void single_loop_iteration(uint32_t*& input_repr, uint32_t*& output_repr, uint32
 
     bool all_solved = (unsolved_count == 0);
 
-    // Allocate and compute prefixes for output positions
+    if (all_solved && new_num == num_boards) {
+        // Optimization: All boards solved, no impossibles to filter, no need for generate kernel
+        err = cudaFree(d_next_pos);
+        if (err != cudaSuccess) {
+            std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaFree failed for d_next_pos (early exit)" << std::endl;
+            cudaFree(d_num_children_out);
+            cudaFree(input_repr);
+            cudaFree(output_repr);
+            cudaStreamDestroy(stream);
+            exit(1);
+        }
+        err = cudaFree(d_num_children_out);
+        if (err != cudaSuccess) {
+            std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaFree failed for d_num_children_out (early exit)" << std::endl;
+            cudaFree(input_repr);
+            cudaFree(output_repr);
+            cudaStreamDestroy(stream);
+            exit(1);
+        }
+        return true;
+    }
+
+    // Need prefixes and generate kernel (for branching unsolved boards or filtering impossibles)
     uint32_t* d_prefixes = nullptr;
     err = cudaMalloc(&d_prefixes, num_boards * sizeof(uint32_t));
     if (err != cudaSuccess) {
@@ -617,8 +659,8 @@ void single_loop_iteration(uint32_t*& input_repr, uint32_t*& output_repr, uint32
     err = cudaFree(d_next_pos);
     if (err != cudaSuccess) {
         std::cout << "CUDA Error: " << cudaGetErrorString(err) << " - cudaFree failed for d_next_pos" << std::endl;
-        cudaFree(d_prefixes);
         cudaFree(d_num_children_out);
+        cudaFree(d_prefixes);
         cudaFree(input_repr);
         cudaFree(output_repr);
         cudaStreamDestroy(stream);
@@ -649,9 +691,7 @@ void single_loop_iteration(uint32_t*& input_repr, uint32_t*& output_repr, uint32
     // Update num_boards after generation and swap
     num_boards = new_num;
 
-    if (all_solved) {
-        return;
-    }
+    return all_solved;
 }
 
 /**
@@ -713,7 +753,10 @@ std::vector<std::array<uint8_t, BOARD_SIZE>> solve_multiple_sudoku(SudokuBoards*
 
     // Process until all solved or no boards left
     for (int loop = 0; loop < MAX_SOLVE_LEVELS; ++loop) {
-		single_loop_iteration(input_repr, output_repr, output_max, input_max, stream, num_boards);
+        bool done = single_loop_iteration(input_repr, output_repr, output_max, input_max, stream, num_boards);
+        if (done) {
+            break;
+        }
     }
 
     uint32_t final_num_boards = num_boards;
