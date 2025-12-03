@@ -417,7 +417,7 @@ std::vector<std::array<uint8_t, BOARD_SIZE>> extract_solutions(uint32_t* h_repr,
     return solutions;
 }
 
-void single_loop_iteration(uint32_t* input_repr, uint32_t* output_repr, uint32_t output_max, uint32_t input_max, cudaStream_t& stream, uint32_t num_boards){	
+void single_loop_iteration(uint32_t* input_repr, uint32_t* output_repr, uint32_t output_max, uint32_t input_max, cudaStream_t& stream, uint32_t& num_boards){	
     std::cout << "Loop, Boards: " << num_boards << std::endl;
     if (num_boards == 0) return;
 
