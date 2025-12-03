@@ -175,7 +175,7 @@ __host__ __device__ inline uint8_t get_number_at_pos(uint32_t* repr, uint32_t nu
 __host__ __device__ inline bool is_blocked(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint8_t pos, uint8_t number) {
     return get_index(repr, num_boards, board_idx, ROW_MASK_BASE + GRID_SIZE * (pos / GRID_SIZE) + number) ||
         get_index(repr, num_boards, board_idx, COL_MASK_BASE + GRID_SIZE * (pos % GRID_SIZE) + number) ||
-        get_index(repr, num_boards, board_idx, BOX_MASK_BASE + GRID_SIZE * (((pos / GRID_SIZE) / SUBGRID_SIZE) * SUBGRID_SIZE + ((pos % GRID_SIZE) / SUBGRID_SIZE)) + number)
+        get_index(repr, num_boards, board_idx, BOX_MASK_BASE + GRID_SIZE * (((pos / GRID_SIZE) / SUBGRID_SIZE) * SUBGRID_SIZE + ((pos % GRID_SIZE) / SUBGRID_SIZE)) + number);
 }
 
 // Sets a number at a position and updates the row, column, and box bitmasks
