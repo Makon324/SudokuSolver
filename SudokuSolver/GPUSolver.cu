@@ -439,58 +439,6 @@ __global__ void generate_children_kernel(uint32_t* d_in_repr, uint32_t in_num_bo
 }
 
 /**
- * Device function to compute the mask of available numbers for a position.
- * Combines masks from row, column, and box to find unused numbers (1-9).
- */
-__device__ inline uint32_t get_available_mask(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint8_t pos) {
-    uint16_t base_row = ROW_MASK_BASE + GRID_SIZE * (pos / GRID_SIZE);
-    uint16_t base_col = COL_MASK_BASE + GRID_SIZE * (pos % GRID_SIZE);
-    uint16_t base_box = BOX_MASK_BASE + GRID_SIZE * (((pos / GRID_SIZE) / SUBGRID_SIZE) * SUBGRID_SIZE + ((pos % GRID_SIZE) / SUBGRID_SIZE));
-    uint32_t row_m = get_mask(repr, num_boards, board_idx, base_row);
-    uint32_t col_m = get_mask(repr, num_boards, board_idx, base_col);
-    uint32_t box_m = get_mask(repr, num_boards, board_idx, base_box);
-    uint32_t used = row_m | col_m | box_m;
-    return ~used & MASK_GROUP;
-}
-
-/**
- * Kernel to generate child boards for each input board.
- * For solved boards, copies as is. For unsolved, creates one child per possible number at the next position.
- * Uses prefixes to determine output positions.
- */
-__global__ void generate_children_kernel(uint32_t* d_in_repr, uint32_t in_num_boards, uint8_t* d_next_pos, uint32_t* d_prefixes, uint32_t* d_out_repr, uint32_t out_num_boards) {
-    uint32_t board_idx = threadIdx.x + blockIdx.x * blockDim.x;
-    if (board_idx >= in_num_boards) return; // if outside of id range
-
-    uint8_t pos = d_next_pos[board_idx];
-    if (pos == IMPOSSIBLE_CODE) return; // impossible, no children
-
-    uint32_t out_start = d_prefixes[board_idx];
-    if (pos == SOLVED_CODE) {
-        // solved, copy as is
-        uint32_t out_idx = out_start;
-        for (uint8_t field = 0; field < FIELDS_PER_BOARD; ++field) {
-            d_out_repr[field * out_num_boards + out_idx] = d_in_repr[field * in_num_boards + board_idx];
-        }
-        return;
-    }
-
-    // Generate children for unsolved board
-    uint32_t avail = get_available_mask(d_in_repr, in_num_boards, board_idx, pos);
-    uint32_t child_idx = 0;
-    while (avail != 0) {
-        uint32_t bit = __ffs(avail) - 1;
-        uint32_t out_idx = out_start + child_idx;
-        for (uint8_t field = 0; field < FIELDS_PER_BOARD; ++field) {
-            d_out_repr[field * out_num_boards + out_idx] = d_in_repr[field * in_num_boards + board_idx];
-        }
-        set(d_out_repr, out_num_boards, out_idx, pos, bit);
-        avail &= ~(1u << bit);
-        ++child_idx;
-    }
-}
-
-/**
  * Computes the total number of new boards (sum of children) using Thrust reduce.
  */
 uint32_t compute_new_num_boards(uint32_t* d_num_children_out, uint32_t num_boards, cudaStream_t stream) {
