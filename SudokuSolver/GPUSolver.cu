@@ -219,6 +219,130 @@ __device__ inline uint32_t get_mask(uint32_t* repr, uint32_t num_boards, uint32_
 }
 
 /**
+ * Device function to propagate naked singles on a Sudoku board.
+ * Scans all empty cells:
+ * - If a cell has 0 possibilities, sets impossible to true.
+ * - If a cell has exactly 1 possibility, sets the number and returns true (changed).
+ * - For cells with more possibilities, updates the MRV (minimum remaining values) cell if applicable.
+ * Also checks if the board is solved (no empty cells left).
+ *
+ * @param repr Device pointer to board representations.
+ * @param num_boards Total number of boards.
+ * @param board_idx Index of the current board.
+ * @param min_poss Reference to minimum possibilities found (updated for MRV).
+ * @param best_pos Reference to position with minimum possibilities (updated for MRV).
+ * @param is_solved Reference to solved flag (set to true if no empty cells).
+ * @param impossible Reference to impossible flag (set to true if empty cell with 0 possibilities).
+ * @return True if any naked single was set (board changed), false otherwise.
+ */
+__device__ inline bool propagate_naked_singles(uint32_t* repr, uint32_t num_boards, uint32_t board_idx,
+    int& min_poss, uint8_t& best_pos,
+    bool& is_solved, bool& impossible) {
+    bool changed = false;
+    is_solved = true;
+    min_poss = GRID_SIZE + 1;
+
+    for (uint8_t pos = 0; pos < BOARD_SIZE; ++pos) {
+        if (is_set(repr, num_boards, board_idx, pos)) continue;
+        is_solved = false;
+
+        uint16_t base_row = ROW_MASK_BASE + GRID_SIZE * (pos / GRID_SIZE);
+        uint16_t base_col = COL_MASK_BASE + GRID_SIZE * (pos % GRID_SIZE);
+        uint16_t base_box = BOX_MASK_BASE + GRID_SIZE * (((pos / GRID_SIZE) / SUBGRID_SIZE) * SUBGRID_SIZE + ((pos % GRID_SIZE) / SUBGRID_SIZE));
+
+        uint32_t row_m = get_mask(repr, num_boards, board_idx, base_row);
+        uint32_t col_m = get_mask(repr, num_boards, board_idx, base_col);
+        uint32_t box_m = get_mask(repr, num_boards, board_idx, base_box);
+
+        uint32_t used = row_m | col_m | box_m;
+        uint32_t avail = ~used & MASK_GROUP;
+        int count = __popc(avail);
+
+        if (count == 0) {
+            impossible = true;
+            break;
+        }
+        else if (count == 1) {
+            uint32_t bit = __ffs(avail) - 1;
+            set(repr, num_boards, board_idx, pos, bit);
+            changed = true;
+        }
+        else {
+            if (count < min_poss) {
+                min_poss = count;
+                best_pos = pos;
+            }
+        }
+    }
+    return changed;
+}
+
+/**
+ * Device function to propagate hidden singles on a Sudoku board.
+ * For each group type (rows, columns, boxes), group, and number:
+ * - If the number is not yet used in the group, counts the number of possible cells where it can be placed.
+ * - If exactly one such cell, sets the number there and returns true (changed).
+ *
+ * Note: Assumes naked singles have been propagated, as hidden singles rely on current possibilities.
+ *
+ * @param repr Device pointer to board representations.
+ * @param num_boards Total number of boards.
+ * @param board_idx Index of the current board.
+ * @return True if any hidden single was set (board changed), false otherwise.
+ */
+__device__ inline bool propagate_hidden_singles(uint32_t* repr, uint32_t num_boards, uint32_t board_idx) {
+    bool changed = false;
+
+    for (int group_type = 0; group_type < 3; ++group_type) { // 0: rows, 1: cols, 2: boxes
+        for (int g = 0; g < 9; ++g) { // Group index 0-8
+            for (int num = 0; num < 9; ++num) { // Number 0-8 (for 1-9)
+                // Compute base for this number in this group
+                uint16_t group_base;
+                if (group_type == 0) group_base = ROW_MASK_BASE + g * GRID_SIZE + num;
+                else if (group_type == 1) group_base = COL_MASK_BASE + g * GRID_SIZE + num;
+                else group_base = BOX_MASK_BASE + g * GRID_SIZE + num;
+
+                // Skip if number already used/placed in this group
+                if (get_index(repr, num_boards, board_idx, group_base)) continue;
+
+                // Count possible cells for this num in the group
+                int count = 0;
+                int candidate_pos = -1;
+                for (int cell = 0; cell < 9; ++cell) {
+                    uint8_t pos;
+                    if (group_type == 0) { // Row
+                        pos = g * 9 + cell;
+                    }
+                    else if (group_type == 1) { // Column
+                        pos = cell * 9 + g;
+                    }
+                    else { // Box
+                        int box_row = g / 3;
+                        int box_col = g % 3;
+                        int row_in_box = cell / 3;
+                        int col_in_box = cell % 3;
+                        pos = (box_row * 3 + row_in_box) * 9 + (box_col * 3 + col_in_box);
+                    }
+
+                    // Check if empty and not blocked (note: group used already checked false)
+                    if (!is_set(repr, num_boards, board_idx, pos) && !is_blocked(repr, num_boards, board_idx, pos, num)) {
+                        count++;
+                        candidate_pos = pos;
+                        if (count > 1) break; // Early stop if >1
+                    }
+                }
+
+                if (count == 1) {
+                    set(repr, num_boards, board_idx, candidate_pos, num);
+                    changed = true;
+                }
+            }
+        }
+    }
+    return changed;
+}
+
+/**
  * Kernel to find the next cell for each board using MRV heuristic.
  * Performs naked and hidden singles propagation until no more changes or impossibility detected.
  * Outputs next position (or special codes: IMPOSSIBLE_CODE for impossible, SOLVED_CODE for solved)
