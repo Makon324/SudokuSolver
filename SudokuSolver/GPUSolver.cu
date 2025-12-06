@@ -494,6 +494,7 @@ void ensure_buffer_size(uint32_t** output_repr, uint32_t* output_max, uint32_t n
  */
 std::vector<std::array<uint8_t, BOARD_SIZE>> extract_solutions(uint32_t* h_repr, uint32_t final_num_boards, uint32_t original_num) {
     std::vector<std::array<uint8_t, BOARD_SIZE>> solutions(original_num);
+
     std::vector<bool> found(original_num, false);
     for (uint32_t board_idx = 0; board_idx < final_num_boards; ++board_idx) {
         uint32_t id = get_id(h_repr, final_num_boards, board_idx);
@@ -505,6 +506,7 @@ std::vector<std::array<uint8_t, BOARD_SIZE>> extract_solutions(uint32_t* h_repr,
         }
         found[id] = true;
     }
+
     return solutions;
 }
 
@@ -783,9 +785,9 @@ std::vector<std::array<uint8_t, BOARD_SIZE>> solve_multiple_sudoku(SudokuBoards*
 
     delete current;
     uint32_t* input_repr = repr_a;
-    uint32_t input_max = MAX_PREALLOC_BOARDS;
+    uint32_t input_max = MAX_PREALLOC_BOARDS;  // Preallocated space for input 
     uint32_t* output_repr = repr_b;
-    uint32_t output_max = MAX_PREALLOC_BOARDS;
+    uint32_t output_max = MAX_PREALLOC_BOARDS;  // Preallocated space for output
     uint32_t num_boards = original_num;
 
     // Process until all solved or no boards left
