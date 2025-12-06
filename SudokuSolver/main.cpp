@@ -14,7 +14,7 @@ void solveGPU(const std::string& input_file, const std::string& output_file, int
 
 int main(int argc, char* argv[]) {
     if (argc != 5) {
-        std::cerr << "Usage: sudoku method count input_file output_file" << std::endl;
+        std::cout << "Usage: sudoku method count input_file output_file" << std::endl;
         return 1;
     }
 
@@ -24,7 +24,7 @@ int main(int argc, char* argv[]) {
         count = std::stoi(argv[2]);
     }
     catch (const std::exception& e) {
-        std::cerr << "Invalid count: " << argv[2] << std::endl;
+        std::cout << "Invalid count: " << argv[2] << std::endl;
         return 1;
     }
     std::string input_file = argv[3];
@@ -37,7 +37,7 @@ int main(int argc, char* argv[]) {
         solveGPU(input_file, output_file, count);
     }
     else {
-        std::cerr << "Invalid method: " << method << ". Must be 'cpu' or 'gpu'." << std::endl;
+        std::cout << "Invalid method: " << method << ". Must be 'cpu' or 'gpu'." << std::endl;
         return 1;
     }
 
