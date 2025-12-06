@@ -23,7 +23,7 @@ int main(int argc, char* argv[]) {
     try {
         count = std::stoi(argv[2]);
     }
-    catch (const std::exception& e) {
+    catch (const std::exception&) {
         std::cout << "Invalid count: " << argv[2] << std::endl;
         return 1;
     }

@@ -148,7 +148,7 @@ __host__ __device__ inline void set_number_at_pos(uint32_t* repr, uint32_t num_b
 __host__ __device__ inline void unset_number_at_pos(uint32_t* repr, uint32_t num_boards, uint32_t board_idx, uint8_t pos) {
     uint8_t repr_idx = LAST_DATA_FIELD - (pos >> 3); // LAST_DATA_FIELD - (pos / 8)
     uint8_t bit_index = (32 - BITS_PER_CELL) - ((pos & (CELLS_PER_FIELD - 1)) << 2); // (32 - 4) - ((pos % 8) * 4)
-    repr[repr_idx * num_boards + board_idx] &= (-1U ^ (MASK_CELL << bit_index));
+    repr[repr_idx * num_boards + board_idx] &= (~0U ^ (MASK_CELL << bit_index));
 }
 
 // Checks if a position has a set number
@@ -452,7 +452,7 @@ uint32_t compute_new_num_boards(uint32_t* d_num_children_out, uint32_t num_board
  * Counts the number of unsolved boards using Thrust count_if.
  */
 uint32_t count_unsolved(uint8_t* d_next_pos, uint32_t num_boards, cudaStream_t stream) {
-    return thrust::count_if(thrust::cuda::par.on(stream),
+    return (uint32_t)thrust::count_if(thrust::cuda::par.on(stream),
         thrust::device_ptr<uint8_t>(d_next_pos),
         thrust::device_ptr<uint8_t>(d_next_pos + num_boards),
         [] __device__(uint8_t pos) { return pos < SOLVED_CODE; });
@@ -901,7 +901,7 @@ std::vector<std::vector<uint32_t>> read_puzzles(const std::string& input_file, i
  * Prepares the host array for board representations, including IDs.
  */
 uint32_t* prepare_host_repr(const std::vector<std::vector<uint32_t>>& temp_reprs) {
-    uint32_t num_boards = temp_reprs.size();
+    uint32_t num_boards = (uint32_t)temp_reprs.size();
     uint32_t* h_repr = new uint32_t[static_cast<size_t>(FIELDS_PER_BOARD) * num_boards]();
     if (h_repr == nullptr) {
         std::cerr << "new failed for h_repr" << std::endl;
@@ -922,7 +922,7 @@ uint32_t* prepare_host_repr(const std::vector<std::vector<uint32_t>>& temp_reprs
  * Writes the solved puzzles to the output file.
  * Outputs "No solution" for unsolved puzzles.
  */
-void write_solutions(const std::string& output_file, const std::vector<std::array<uint8_t, BOARD_SIZE>>& solutions) {
+static void write_solutions(const std::string& output_file, const std::vector<std::array<uint8_t, BOARD_SIZE>>& solutions) {
     std::ofstream out(output_file);
     if (!out.is_open()) {
         std::cerr << "Failed to open output file: " << output_file << std::endl;
@@ -973,7 +973,7 @@ void solveGPU(const std::string& input_file, const std::string& output_file, int
         }
         return;
     }
-    uint32_t num_boards = temp_reprs.size();
+    uint32_t num_boards = (uint32_t)temp_reprs.size();
 
     // Prepare host representation array
     uint32_t* h_repr = prepare_host_repr(temp_reprs);
